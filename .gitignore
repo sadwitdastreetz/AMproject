@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual env / secrets
+.venv/
+.env
+
+# Local experiment artifacts
+outputs/
+
+# Cloned external repo (keep out of this repository)
+MemoryAgentBench/

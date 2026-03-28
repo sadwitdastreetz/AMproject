@@ -1,0 +1,30 @@
+experiment:
+  name: cavf_mvp
+  benchmark: MemoryAgentBench
+  split: Conflict_Resolution
+
+memory:
+  store_type: in_memory
+  fact_extractor: heuristic
+  entity_linking: normalized_string
+  soft_forgetting: true
+  hard_delete: false
+
+conflict:
+  detector: heuristic_then_llm
+  enable_supersession: true
+  enable_dependency_invalidation: true
+
+retrieval:
+  mode: conflict_aware
+  top_k: 5
+  include_superseded_for_debug: false
+
+reasoning:
+  mode: two_stage
+  max_hops: 3
+  reject_superseded_paths: true
+
+logging:
+  save_traces: true
+  trace_dir: outputs/traces
