@@ -1,81 +1,74 @@
-# Selective Forgetting for Memory Agents
+# General Agent Memory System
 
-This repository is a research starter kit for improving selective forgetting in memory agents, with a primary focus on the `Conflict_Resolution` split of [MemoryAgentBench](https://huggingface.co/datasets/ai-hyz/MemoryAgentBench).
+This repository is a research codebase for building a `general Agent Memory System` with `selective forgetting` as a core memory evolution capability.
 
-The core hypothesis is that current memory agents fail not only because they retrieve the wrong evidence, but because they do not maintain an explicit, queryable model of:
+The project is not aimed at solving a single benchmark in isolation. Instead, it treats benchmarks such as [MemoryAgentBench](https://huggingface.co/datasets/ai-hyz/MemoryAgentBench) as validation environments for a reusable memory core that can later support broader long-horizon settings such as `LoCoMo`.
 
-- fact versions,
-- contradiction links,
-- update provenance,
-- dependency chains needed for multi-hop conflict resolution.
+## Project Goal
 
-We therefore propose a modular memory architecture centered on `versioned memory`, `targeted forgetting`, and `conflict-aware reasoning`.
+Build a modular memory framework that can:
 
-## Research Goal
+- ingest heterogeneous observations,
+- parse them into reusable memory candidates,
+- evolve memory state when new evidence arrives,
+- selectively forget through state transition rather than deletion,
+- expose both `history` and `active state` views,
+- support benchmark adapters without letting benchmarks define the core abstraction.
 
-Build and evaluate a memory mechanism that improves:
+## Current Position
 
-- selective forgetting of outdated facts,
-- consistency after updates,
-- multi-hop conflict resolution accuracy,
-- interpretability through explicit memory state transitions.
+The repository currently centers on:
 
-## Benchmark Focus
+- architecture documentation,
+- research planning,
+- implementation work orders for a clean rebuild.
 
-- Dataset: `ai-hyz/MemoryAgentBench`
-- Main split: `Conflict_Resolution`
-- Initial target: outperform strong retrieval and memory baselines on multi-hop conflict cases while preserving single-hop performance.
+The main implementation direction is the `general Agent Memory System` described in the architecture docs.
+Legacy benchmark-oriented code has been removed from the mainline so future implementation threads start from the right abstraction.
+
+## Key Documents
+
+- [research_blueprint.md](/C:/Users/ddger/Documents/AMproject/docs/research_blueprint.md)
+- [general_agent_memory_architecture.md](/C:/Users/ddger/Documents/AMproject/docs/general_agent_memory_architecture.md)
+- [v1_subagent_work_orders.md](/C:/Users/ddger/Documents/AMproject/docs/v1_subagent_work_orders.md)
+- [experiment_plan.md](/C:/Users/ddger/Documents/AMproject/docs/experiment_plan.md)
 
 ## Repository Layout
 
 ```text
 docs/
   research_blueprint.md
+  general_agent_memory_architecture.md
+  v1_subagent_work_orders.md
   experiment_plan.md
+scripts/
 src/
   memory_agent/
-    config.py
-    schemas.py
-    memory_manager.py
-    reasoning.py
-    pipeline.py
-    forgetting/
-      selective_forgetting.py
-    conflict/
-      resolver.py
-    storage/
-      memory_store.py
-    benchmarks/
-      memory_agent_bench.py
-configs/
-  base.yaml
-scripts/
-  run_mab_conflict.py
-tests/
-  test_selective_forgetting.py
+    __init__.py
 ```
 
-## Quick Start
+## Development Direction
 
-1. Create an environment and install your preferred LLM, vector DB, and experiment tooling.
-2. Read [docs/research_blueprint.md](/C:/Users/ddger/Documents/AMproject/docs/research_blueprint.md).
-3. Start from [scripts/run_mab_conflict.py](/C:/Users/ddger/Documents/AMproject/scripts/run_mab_conflict.py).
-4. Replace placeholder heuristics with your first train-free or LLM-assisted implementation.
+The implementation roadmap now follows this principle:
 
-## MVP Roadmap
+- state changes happen primarily at ingest-time,
+- context interpretation can happen at query-time,
+- structural reorganization can happen in background or offline stages.
 
-1. Load `Conflict_Resolution` samples from MemoryAgentBench.
-2. Convert each incoming chunk into candidate facts and entities.
-3. Detect whether a new fact supports, updates, or contradicts an existing fact.
-4. Mark stale facts as superseded instead of deleting them blindly.
-5. Answer queries using only active facts plus contradiction-aware reasoning traces.
-6. Run ablations on forgetting policy, conflict detection, and hop-aware retrieval.
+The online default is:
+
+`Observation -> Candidate -> Related Memory -> Evolution Decision -> State Commit`
+
+The architectural center is:
+
+`outer generic MemoryItem + inner A-MEM-style Note`
 
 ## Research Positioning
 
-This codebase is designed to support:
+This codebase is intended to support:
 
-- reproducible experiments,
-- paper-friendly modular ablations,
-- error analysis,
-- future extensions to long-range memory and continual learning.
+- reproducible memory-system experiments,
+- architecture-first development,
+- modular ablations,
+- selective forgetting research,
+- future migration from SDK-style research code to service-ready interfaces.

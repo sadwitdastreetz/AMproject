@@ -1,1 +1,1 @@
-"""Research scaffold for selective forgetting memory agents."""
+"""Architecture-first workspace for a general Agent Memory System."""
