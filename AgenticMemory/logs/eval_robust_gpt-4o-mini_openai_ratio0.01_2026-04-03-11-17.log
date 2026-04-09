@@ -1,0 +1,5 @@
+2026-04-03 11:17:52,095 - INFO - Loading dataset from C:\Users\ddger\Documents\AMproject\AgenticMemory\data/locomo10.json
+2026-04-03 11:17:52,095 - INFO - Using ROBUST memory layer (no JSON schema dependency)
+2026-04-03 11:17:52,316 - INFO - Loaded 10 samples
+2026-04-03 11:17:52,317 - INFO - Using 1 samples (1.0% of dataset)
+2026-04-03 11:17:52,398 - INFO - No cached memories found for sample 0. Creating new memories.

@@ -266,3 +266,79 @@
 - 与未对齐 memory-construction prompt 的版本相比，差别很小
 - 这说明 A-Mem 在 `MH` 上的失败主要不是由 prompt 未对齐引起，而是由方法本体结构导致
 
+## 10. OpenRouter 切换与后续小基准
+
+### 10.1 运行环境切换
+
+完成内容：
+
+1. 将 LLM / embedding 路径改为支持：
+   - `OPENAI_API_KEY`
+   - `OPENAI_BASE_URL`
+2. 将当前运行环境切到：
+   - `OPENAI_BASE_URL = https://openrouter.ai/api/v1`
+3. 使用 key：
+   - `sk-or-v1-...`
+
+说明：
+
+- 这一改动不改变 A-Mem 方法本体
+- 仅改变底层 API provider 路由
+
+### 10.2 OpenRouter smoke test
+
+实验：
+
+- `factconsolidation_sh_32k`
+- `chunk_size = 512`
+- `gpt-5.4-mini`
+- `memory construction` 已对齐官方 memorize prompt
+- `前 1 问`
+
+结果文件：
+
+- `AgenticMemory/smoke_sh32k_1q_gpt54mini_openrouter.json`
+- `AgenticMemory/smoke_sh32k_1q_gpt54mini_openrouter_trace.jsonl`
+
+结果：
+
+- `exact_match = 0.0000`
+- `f1 = 0.0000`
+
+说明：
+
+- 该 smoke test 的目的不是评估性能
+- 而是确认 OpenRouter 这条调用链在当前 runner 中可正常 ingest / retrieve / answer
+
+### 10.3 `factconsolidation_sh_32k + chunk_size=512 + gpt-5.4-mini + trace`, 前 50 问
+
+实验条件：
+
+- provider：
+  - OpenRouter
+- model：
+  - `gpt-5.4-mini`
+- source：
+  - `factconsolidation_sh_32k`
+- `chunk_size = 512`
+- `memory construction` 已对齐官方 memorize prompt
+- 保留 trace
+- 范围：
+  - `前 50 问`
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_gpt54mini_chunk512_trace_memprompt_openrouter_results.json`
+- `AgenticMemory/cr_sh_32k_50q_gpt54mini_chunk512_trace_memprompt_openrouter.jsonl`
+
+结果：
+
+- `exact_match = 0.4000`
+- `f1 = 0.4327`
+- `substring_exact_match = 0.4000`
+- `chunks_ingested = 65`
+
+意义：
+
+- 这组结果将作为后续尝试改进 selective forgetting 时的一个小基准
+- 它比此前 `20` 问结果更稳定，也更适合作为后续对照

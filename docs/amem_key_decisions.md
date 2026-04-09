@@ -72,11 +72,41 @@
 - 吸收 benchmark 的 task discipline
 - 保留 A-Mem 的方法本体
 
-## 8. 关于本轮暂停点
+## 8. 关于 provider 与运行环境
+
+当前新增决策：
+
+1. 运行环境允许通过：
+   - `OPENAI_API_KEY`
+   - `OPENAI_BASE_URL`
+   进行 provider 切换
+2. 当前实验已切到：
+   - OpenRouter
+3. 这一切换被视为底层调用路由变化，不视为 memory method 变化
+
+## 9. 关于后续小基准
+
+已形成新的固定参考实验之一：
+
+- `factconsolidation_sh_32k + chunk_size=512 + gpt-5.4-mini + trace`
+- `memory construction` 对齐官方 memorize prompt
+- 前 `50` 问
+- 通过 OpenRouter 运行
+
+该实验结果：
+
+- `exact_match = 0.4000`
+- `f1 = 0.4327`
+
+用途：
+
+- 作为后续尝试改进 selective forgetting 时的小基准
+- 在继续做方法改动时优先用它做快速回归对照
+
+## 10. 关于本轮暂停点
 
 当前决策：
 
 - 暂停继续提出改进方案
 - 先存档
 - 先把已有实验与理解整理成文档基础设施
-
