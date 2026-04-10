@@ -207,3 +207,70 @@
 
 - 只加 recent-memory priority 就已经能带来可见收益
 - 后续 topic regrouping 应视为在这个阶段 A 基础上的第二层增益验证
+
+## 17. 关于阶段 B 的 regrouping 实现策略
+
+当前新增决策：
+
+1. 阶段 B 不采用：
+   - LightMem 的 turn-level segmentation
+2. 阶段 B 当前采用：
+   - flush window 内句子级局部单位
+   - embedding-based topic regrouping
+   - order-preserving reconstruction
+3. regrouping 当前明确不做：
+   - 文本改写
+   - 事实摘要
+   - relation schema 抽取
+
+## 18. 关于阶段 B regrouping 的稳定化处理
+
+当前新增决策：
+
+1. 仅靠 embedding 阈值 + 连通分量会产生 giant-cluster
+2. 为控制 topic collapse，当前实现加入：
+   - 纯编号/短碎片句合并
+   - reciprocal top-k 邻接约束
+   - oversized cluster 二次拆分
+3. 这些处理被视为：
+   - regrouping 稳定化工程
+   - 不视为 memory method 本体变化
+
+## 19. 关于阶段 B 的当前正式结果
+
+当前新增决策：
+
+1. 阶段 B 当前正式小基准固定为：
+   - `factconsolidation_sh_32k`
+   - `chunk_size = 512`
+   - `gpt-5.4-mini`
+   - OpenRouter
+   - `openai/text-embedding-3-small`
+   - 前 `50` 问
+2. 阶段 B 启用：
+   - short-term buffer
+   - recent-first dual retrieval
+   - topic regrouping
+
+当前结果：
+
+- `exact_match = 0.5600`
+- `f1 = 0.6013`
+- `substring_exact_match = 0.5800`
+
+相对原始基线提升：
+
+- `exact_match: +0.1600`
+- `f1: +0.1687`
+- `substring_exact_match: +0.1800`
+
+相对阶段 A 提升：
+
+- `exact_match: +0.1200`
+- `f1: +0.1220`
+- `substring_exact_match: +0.1200`
+
+当前判断：
+
+- 阶段 B 已经显示出强于阶段 A 的额外增益
+- 说明 topic regrouping 不只是结构上可行，而且在当前 `SH 32k` 小基准上已有明显效果

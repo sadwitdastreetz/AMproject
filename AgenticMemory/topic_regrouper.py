@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 from nltk.tokenize import sent_tokenize
+from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
@@ -60,21 +61,48 @@ class TopicRegrouper:
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         similarity_threshold: float = 0.42,
         min_cluster_size: int = 2,
+        reciprocal_top_k: int = 5,
+        max_cluster_sentences: int = 40,
         trace_path: Optional[str] = None,
     ):
         self.embedding_model = embedding_model
         self.model = build_embedding_model(embedding_model)
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
+        self.reciprocal_top_k = reciprocal_top_k
+        self.max_cluster_sentences = max_cluster_sentences
         self.trace_logger = GroupTraceLogger(trace_path)
+
+    def _normalize_sentences(self, text: str) -> List[str]:
+        raw_sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
+        if not raw_sentences:
+            return [text.strip()]
+
+        merged: List[str] = []
+        pending_prefix = ""
+        for sentence in raw_sentences:
+            alpha_count = sum(ch.isalpha() for ch in sentence)
+            is_fragment = alpha_count < 5
+            if is_fragment:
+                pending_prefix = f"{pending_prefix} {sentence}".strip()
+                continue
+            if pending_prefix:
+                sentence = f"{pending_prefix} {sentence}".strip()
+                pending_prefix = ""
+            merged.append(sentence)
+
+        if pending_prefix:
+            if merged:
+                merged[-1] = f"{merged[-1]} {pending_prefix}".strip()
+            else:
+                merged.append(pending_prefix)
+        return merged or [text.strip()]
 
     def _to_sentence_units(self, items: Sequence[RecentMemoryItem]) -> List[SentenceUnit]:
         units: List[SentenceUnit] = []
         global_idx = 0
         for item in items:
-            sentences = [s.strip() for s in sent_tokenize(item.raw_text) if s.strip()]
-            if not sentences:
-                sentences = [item.raw_text.strip()]
+            sentences = self._normalize_sentences(item.raw_text)
             for sentence_idx, sentence in enumerate(sentences):
                 units.append(
                     SentenceUnit(
@@ -87,17 +115,44 @@ class TopicRegrouper:
                 global_idx += 1
         return units
 
-    def _cluster_units(self, units: List[SentenceUnit]) -> List[List[SentenceUnit]]:
+    def _split_oversized_cluster(
+        self,
+        cluster: List[SentenceUnit],
+        embeddings: np.ndarray,
+    ) -> List[List[SentenceUnit]]:
+        if len(cluster) <= self.max_cluster_sentences:
+            return [sorted(cluster, key=lambda unit: unit.global_idx)]
+
+        n_clusters = int(np.ceil(len(cluster) / self.max_cluster_sentences))
+        if n_clusters <= 1:
+            return [sorted(cluster, key=lambda unit: unit.global_idx)]
+
+        kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init=10)
+        labels = kmeans.fit_predict(embeddings)
+        split_clusters: List[List[SentenceUnit]] = []
+        for label in sorted(set(labels)):
+            subgroup = [cluster[idx] for idx, assigned in enumerate(labels) if assigned == label]
+            subgroup = sorted(subgroup, key=lambda unit: unit.global_idx)
+            split_clusters.append(subgroup)
+        return split_clusters
+
+    def _cluster_units(self, units: List[SentenceUnit]) -> tuple[List[List[SentenceUnit]], np.ndarray]:
         if len(units) <= 1:
-            return [units]
+            embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
+            return [units], embeddings
 
         embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
         sim = cosine_similarity(embeddings)
         adjacency = {idx: set() for idx in range(len(units))}
+        neighbor_sets: List[set[int]] = []
+        for i in range(len(units)):
+            ranked = np.argsort(sim[i])[::-1]
+            filtered = [idx for idx in ranked if idx != i and sim[i, idx] >= self.similarity_threshold]
+            neighbor_sets.append(set(filtered[: self.reciprocal_top_k]))
         for i in range(len(units)):
             adjacency[i].add(i)
             for j in range(i + 1, len(units)):
-                if sim[i, j] >= self.similarity_threshold:
+                if sim[i, j] >= self.similarity_threshold and i in neighbor_sets[j] and j in neighbor_sets[i]:
                     adjacency[i].add(j)
                     adjacency[j].add(i)
 
@@ -127,14 +182,19 @@ class TopicRegrouper:
         for cluster in small_clusters:
             large_clusters[0].extend(cluster)
             large_clusters[0].sort(key=lambda unit: unit.global_idx)
-        return large_clusters
+        split_clusters: List[List[SentenceUnit]] = []
+        for cluster in large_clusters:
+            cluster_indices = [unit.global_idx for unit in cluster]
+            cluster_embeddings = embeddings[cluster_indices]
+            split_clusters.extend(self._split_oversized_cluster(cluster, cluster_embeddings))
+        return split_clusters, embeddings
 
     def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
         units = self._to_sentence_units(items)
         if not units:
             return []
 
-        clusters = self._cluster_units(units)
+        clusters, embeddings = self._cluster_units(units)
         groups: List[TopicGroup] = []
         cluster_payload = []
         for idx, cluster in enumerate(clusters):
@@ -172,6 +232,9 @@ class TopicRegrouper:
                 "input_chunk_count": len(items),
                 "sentence_count": len(units),
                 "cluster_count": len(groups),
+                "similarity_threshold": self.similarity_threshold,
+                "reciprocal_top_k": self.reciprocal_top_k,
+                "max_cluster_sentences": self.max_cluster_sentences,
                 "clusters": cluster_payload,
             },
         )

@@ -510,3 +510,210 @@
 - 还未启用 topic regrouping
 
 就已经在 `SH 32k` 小基准上带来了可见提升。
+
+## 12. 阶段 B：Topic Regrouping 实现与测试
+
+### 12.1 阶段 B 初始 smoke 与 regrouping 问题暴露
+
+初始目标：
+
+- 在阶段 A 基础上启用：
+  - `topic regrouping`
+- 验证链路：
+  - `short-term buffer -> flush window -> topic regrouping -> grouped sub-chunks -> A-Mem`
+
+初始 smoke：
+
+- `factconsolidation_sh_6k`
+- `chunk_size = 512`
+- `max_questions = 3`
+- 启用：
+  - topic regrouping
+
+初始结果文件：
+
+- `AgenticMemory/smoke_stageB_topic_regrouping_sh6k_3q.json`
+- `AgenticMemory/smoke_stageB_topic_regrouping_sh6k_3q_grouptrace.jsonl`
+
+初始结构观察：
+
+- 主链路可运行
+- 但第一版 regrouping 使用：
+  - 相似度阈值
+  - 连通分量
+
+导致严重的 giant-cluster 问题：
+
+- 一个 flush window 中：
+  - `582` 个句子
+  - 其中 `533` 个句子落入同一个 topic group
+
+解释：
+
+- `FactConsolidation` 里的事实句模板高度相似
+- 简单的 embedding threshold + transitive connectivity 很容易形成一整个巨型簇
+
+结论：
+
+- 方向未失效
+- 但第一版 clustering 机制不够稳，需要继续收敛
+
+### 12.2 阶段 B regrouping 机制修正
+
+为了解决 giant-cluster 问题，本轮对 `topic_regrouper.py` 做了三类修正：
+
+1. 句子清理
+   - 合并纯编号/极短碎片句，减少 `sent_tokenize` 在事实编号文本上的碎裂
+2. 图构造收紧
+   - 从“阈值即连边”改为：
+     - `similarity threshold`
+     - `reciprocal top-k neighbors`
+   - 减少由模板相似造成的链式连通
+3. 超大簇二次拆分
+   - 对超大 cluster 做二次切分
+   - 使用轻量 `KMeans` 控制单 topic 的最大句子规模
+
+这一步的目标不是追求最终最优分数，而是让 regrouping 至少形成可读、可分析、非塌缩的 topic buckets。
+
+### 12.3 阶段 B 修正后 smoke
+
+重新跑：
+
+- `factconsolidation_sh_6k`
+- `chunk_size = 512`
+- `max_questions = 3`
+- 启用：
+  - topic regrouping
+
+修正后观察：
+
+- `sentence_count = 306`
+- `cluster_count = 24`
+- 最大簇从“几乎覆盖整个窗口”下降到：
+  - `max_cluster = 52`
+
+这说明：
+
+- regrouping 仍不完美
+- 但已经从“完全塌缩”变为“可工作的多 topic 分组”
+- 一些 topic preview 已经能看出较明显的语义中心，例如：
+  - `position / sport`
+  - `founded by`
+  - `continent`
+  - `headquarters in city`
+
+### 12.4 阶段 B 中等规模测试：`factconsolidation_sh_32k` 前 20 问
+
+实验条件：
+
+- source：
+  - `factconsolidation_sh_32k`
+- model：
+  - `gpt-5.4-mini`
+- embedding：
+  - `openai/text-embedding-3-small`
+- provider：
+  - OpenRouter
+- `chunk_size = 512`
+- 启用：
+  - `short-term buffer`
+  - `Recent + Archival` 双通道 retrieval
+  - `Recent Memory` 冲突优先
+  - topic regrouping
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_20q_stageB_topic_regrouping_openrouter_results.json`
+- `AgenticMemory/cr_sh_32k_20q_stageB_topic_regrouping_openrouter_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_20q_stageB_topic_regrouping_openrouter_recenttrace.jsonl`
+- `AgenticMemory/cr_sh_32k_20q_stageB_topic_regrouping_openrouter_grouptrace.jsonl`
+
+结果：
+
+- `exact_match = 0.6500`
+- `f1 = 0.6950`
+- `substring_exact_match = 0.6500`
+
+与旧的 `20` 问结果相比，表现已经明显更强。
+
+### 12.5 阶段 B 正式小基准：`factconsolidation_sh_32k` 前 50 问
+
+实验条件：
+
+- source：
+  - `factconsolidation_sh_32k`
+- model：
+  - `gpt-5.4-mini`
+- embedding：
+  - `openai/text-embedding-3-small`
+- provider：
+  - OpenRouter
+- `chunk_size = 512`
+- 前 `50` 问
+- 启用：
+  - short-term buffer
+  - recent-first dual retrieval
+  - topic regrouping
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_stageB_topic_regrouping_openrouter_results.json`
+- `AgenticMemory/cr_sh_32k_50q_stageB_topic_regrouping_openrouter_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_topic_regrouping_openrouter_recenttrace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_topic_regrouping_openrouter_grouptrace.jsonl`
+
+结果：
+
+- `exact_match = 0.5600`
+- `f1 = 0.6013`
+- `substring_exact_match = 0.5800`
+
+与已有对照相比：
+
+原始基线：
+
+- `exact_match = 0.4000`
+- `f1 = 0.4327`
+- `substring_exact_match = 0.4000`
+
+阶段 A：
+
+- `exact_match = 0.4400`
+- `f1 = 0.4793`
+- `substring_exact_match = 0.4600`
+
+阶段 B：
+
+- `exact_match = 0.5600`
+- `f1 = 0.6013`
+- `substring_exact_match = 0.5800`
+
+阶段 B 相对提升：
+
+- 相对原始基线：
+  - `exact_match: +0.1600`
+  - `f1: +0.1687`
+  - `substring_exact_match: +0.1800`
+- 相对阶段 A：
+  - `exact_match: +0.1200`
+  - `f1: +0.1220`
+  - `substring_exact_match: +0.1200`
+
+结构性观察：
+
+- `chunks_ingested = 65`
+- `archived_units = 205`
+- `recent_buffer_size = 1`
+- `flush_windows = 8`
+
+解释：
+
+- 阶段 B 不再把每个 flush window 原样写入 archival
+- 而是把每个 window 重新 regroup 成多个 topic sub-chunks
+- 因此 archival units 数量明显增加
+
+当前结论：
+
+- 在当前实现下，阶段 B 的 topic regrouping 不是“轻微改善”
+- 而是在 `SH 32k` 小基准上带来了非常明显的增益
+- 说明“recent-first + write-unit reorganization” 这个方向值得继续深挖
