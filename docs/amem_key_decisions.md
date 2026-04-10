@@ -172,3 +172,38 @@
    - `openai/text-embedding-3-small`
 2. 带 provider 前缀的名称必须仍然走 OpenAI/OpenRouter embedding API
 3. 不能误回落到本地 `SentenceTransformer` 路径
+
+## 16. 关于四层记忆方案阶段 A 的当前基线结论
+
+当前新增决策：
+
+1. 阶段 A 的第一轮正式对照先固定为：
+   - `factconsolidation_sh_32k`
+   - `chunk_size = 512`
+   - `gpt-5.4-mini`
+   - OpenRouter
+   - `openai/text-embedding-3-small`
+   - 前 `50` 问
+2. 阶段 A 当前只启用：
+   - `short-term buffer`
+   - `Recent + Archival` 双通道 retrieval
+   - `Recent Memory` 冲突优先
+3. 阶段 A 当前不启用：
+   - topic regrouping
+
+当前结果：
+
+- `exact_match = 0.4400`
+- `f1 = 0.4793`
+- `substring_exact_match = 0.4600`
+
+相对当前基线提升：
+
+- `exact_match: +0.0400`
+- `f1: +0.0467`
+- `substring_exact_match: +0.0600`
+
+这意味着：
+
+- 只加 recent-memory priority 就已经能带来可见收益
+- 后续 topic regrouping 应视为在这个阶段 A 基础上的第二层增益验证

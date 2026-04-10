@@ -437,3 +437,76 @@
 - 以及 `openai/text-embedding-*`
 
 都会正确走 OpenAI/OpenRouter embedding API 路径，而不是误走本地 sentence-transformers fallback。
+
+### 11.4 阶段 A 小基准：`factconsolidation_sh_32k` 前 50 问
+
+实验条件：
+
+- source：
+  - `factconsolidation_sh_32k`
+- model：
+  - `gpt-5.4-mini`
+- embedding：
+  - `openai/text-embedding-3-small`
+- provider：
+  - OpenRouter
+- `chunk_size = 512`
+- `memory construction`：
+  - 继续保持 benchmark 官方 memorize prompt 对齐
+- 启用：
+  - `short-term buffer`
+  - `Recent Memory + Archival Memory` 双通道 retrieval
+  - `Recent Memory` 冲突优先
+- 未启用：
+  - topic regrouping
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_stageA_recent_archival_openrouter_results.json`
+- `AgenticMemory/cr_sh_32k_50q_stageA_recent_archival_openrouter_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageA_recent_archival_openrouter_recenttrace.jsonl`
+
+结果：
+
+- `exact_match = 0.4400`
+- `f1 = 0.4793`
+- `substring_exact_match = 0.4600`
+
+与当前基线对比：
+
+基线：
+
+- `factconsolidation_sh_32k + chunk_size=512 + gpt-5.4-mini + memprompt aligned`
+- `exact_match = 0.4000`
+- `f1 = 0.4327`
+- `substring_exact_match = 0.4000`
+
+阶段 A 提升：
+
+- `exact_match: +0.0400`
+- `f1: +0.0467`
+- `substring_exact_match: +0.0600`
+
+结构性观察：
+
+1. `chunks_ingested = 65`
+2. `archived_units = 64`
+3. `recent_buffer_size = 1`
+4. `recent_buffer_tokens = 388`
+5. `flush_windows = 8`
+
+解释：
+
+- 这说明阶段 A 方案在 `50` 问实验结束时：
+  - 大部分 chunk 已经通过 flush 进入 archival A-Mem
+  - 最后的 1 个 chunk 仍停留在 short-term buffer
+- 也就是说，阶段 A 不会改变 benchmark 原始 chunk 数，但会改变：
+  - 哪些内容停留在 recent memory
+  - 哪些内容沉到 archival memory
+
+当前结论：
+
+- 只引入 `short-term recent-first retrieval`
+- 还未启用 topic regrouping
+
+就已经在 `SH 32k` 小基准上带来了可见提升。
