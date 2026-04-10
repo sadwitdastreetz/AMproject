@@ -72,8 +72,9 @@ class OpenAIEmbeddingModel:
 
 def build_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL):
     requested_model = model_name or DEFAULT_EMBEDDING_MODEL
+    normalized_model = requested_model.split("/", 1)[-1]
 
-    if requested_model.startswith("text-embedding-"):
+    if requested_model.startswith("text-embedding-") or normalized_model.startswith("text-embedding-"):
         return OpenAIEmbeddingModel(requested_model)
 
     if SentenceTransformer is not None:

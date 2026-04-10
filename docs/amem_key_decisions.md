@@ -110,3 +110,65 @@
 - 暂停继续提出改进方案
 - 先存档
 - 先把已有实验与理解整理成文档基础设施
+
+## 11. 关于四层记忆方案的阶段拆分
+
+当前新增决策：
+
+1. 四层记忆方案分阶段实现
+2. 先做：
+   - `short-term buffer`
+   - `Recent + Archival` 双通道 retrieval
+3. 暂不把：
+   - topic regrouping
+   - A-Mem evolution 本体修复
+   混入第一轮验证
+
+原因：
+
+1. 先单独验证 recent-memory priority 是否能立刻改善 selective forgetting
+2. 避免把收益来源和变量混在一起
+
+## 12. 关于 short-term buffer 的定义
+
+当前新增决策：
+
+1. short-term memory 的容量按：
+   - `token budget`
+   定义，而不是按固定 chunk 数定义
+2. 第一版 token budget 固定为：
+   - `4096`
+3. 在当前 `FactConsolidation + chunk_size=512` 条件下，可近似理解为最近 `8` 个 benchmark chunks
+
+## 13. 关于 retrieval 的第一版优先级策略
+
+当前新增决策：
+
+1. retrieval 第一版固定分为：
+   - `Recent Memory`
+   - `Archival Memory`
+2. prompt 中必须显式声明：
+   - 若两者冲突，优先 `Recent Memory`
+3. 第一版不额外增加一次独立的 conflict arbitration LLM 调用
+
+## 14. 关于 OpenRouter 运行前置验证
+
+当前新增决策：
+
+1. 在使用 OpenRouter 跑实验前，需要先验证：
+   - chat model 可用
+   - embedding model 可用
+2. 对当前环境，已确认可用组合包括：
+   - `gpt-5.4-mini`
+   - `openai/text-embedding-3-small`
+3. provider 通路验证应视为实验前置条件，而不是实验结果本身
+
+## 15. 关于带 provider 前缀的 embedding model 名称
+
+当前新增决策：
+
+1. embedding model 名称允许使用：
+   - `text-embedding-3-small`
+   - `openai/text-embedding-3-small`
+2. 带 provider 前缀的名称必须仍然走 OpenAI/OpenRouter embedding API
+3. 不能误回落到本地 `SentenceTransformer` 路径

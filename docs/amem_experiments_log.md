@@ -342,3 +342,98 @@
 
 - 这组结果将作为后续尝试改进 selective forgetting 时的一个小基准
 - 它比此前 `20` 问结果更稳定，也更适合作为后续对照
+
+## 11. 四层记忆方案阶段 A：API 可用性验证与 smoke test
+
+### 11.1 OpenRouter API 可用性复核
+
+背景：
+
+- 在实现 `short-term buffer + dual retrieval` 后，首次 smoke 没有真正跑通
+- 重新排查发现，问题不只可能来自 API key，还涉及：
+  - chat model 的 region 可用性
+  - embedding provider 的实际返回
+
+本轮追加验证内容：
+
+1. 显式设置：
+   - `OPENAI_API_KEY`
+   - `OPENAI_BASE_URL = https://openrouter.ai/api/v1`
+2. 直接调用 OpenRouter HTTP 接口验证：
+   - `gpt-5.4-mini` chat
+   - `openai/text-embedding-3-small` embeddings
+
+最终确认：
+
+- `gpt-5.4-mini` chat 可用
+- `openai/text-embedding-3-small` embeddings 可用
+
+说明：
+
+- 这一步的目的是确认当前 OpenRouter 节点与 region 条件下，后续阶段 A 实验具备可运行前提
+- 这一步不构成 benchmark 结果，只是 provider 层通路验证
+
+### 11.2 阶段 A 最小 smoke：Recent + Archival 双通道
+
+实验条件：
+
+- source：
+  - `factconsolidation_sh_6k`
+- model：
+  - `gpt-5.4-mini`
+- embedding：
+  - `openai/text-embedding-3-small`
+- provider：
+  - OpenRouter
+- `chunk_size = 512`
+- `max_questions = 1`
+- 启用：
+  - `short-term buffer`
+  - `Recent Memory + Archival Memory` 双通道 retrieval
+- 未启用：
+  - topic regrouping
+
+结果文件：
+
+- `AgenticMemory/smoke_stageA_recent_only.json`
+- `AgenticMemory/smoke_stageA_recent_only_trace.jsonl`
+- `AgenticMemory/smoke_stageA_recent_only_recenttrace.jsonl`
+
+结果：
+
+- `exact_match = 0.0000`
+- `f1 = 0.0000`
+
+但本次 smoke 的关键结论不是分数，而是链路验证成功：
+
+1. `Recent Memory` 和 `Archival Memory` 都成功进入最终 prompt
+2. `recent trace` 正常记录了：
+   - chunk 写入
+   - token 累积
+   - buffer 状态
+3. 当前阶段 A 的新 orchestration 已可运行：
+   - `ingest -> short-term buffer -> archival retrieval + recent retrieval -> answer`
+
+补充观察：
+
+- 本次 smoke 结束时：
+  - `chunks_ingested = 12`
+  - `archived_units = 8`
+  - `recent_buffer_size = 4`
+- 这与 `4096 token` buffer 设定是吻合的：
+  - 前 8 个 chunk 已进入 archival
+  - 最近 4 个 chunk 仍停留在 short-term buffer
+
+### 11.3 兼容性修复
+
+在 smoke 过程中发现一个实现兼容问题：
+
+- `openai/text-embedding-3-small` 这种带 provider 前缀的模型名
+- 会被旧的 `build_embedding_model()` 误判成 `SentenceTransformer` 名称
+
+修复后：
+
+- `text-embedding-*`
+- 以及 `openai/text-embedding-*`
+
+都会正确走 OpenAI/OpenRouter embedding API 路径，而不是误走本地 sentence-transformers fallback。
