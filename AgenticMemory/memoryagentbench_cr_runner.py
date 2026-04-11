@@ -13,7 +13,10 @@ from test_advanced_robust import parse_plain_text_answer
 from topic_regrouper import TopicRegrouper
 
 
-BENCH_ROOT = Path(__file__).resolve().parent.parent / "MemoryAgentBench"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BENCH_ROOT = PROJECT_ROOT / "MemoryAgentBench"
+if not BENCH_ROOT.exists():
+    BENCH_ROOT = Path(r"C:\Users\ddger\Documents\AMproject\MemoryAgentBench")
 BENCH_UTILS = BENCH_ROOT / "utils"
 for path in (BENCH_ROOT, BENCH_UTILS):
     if str(path) not in sys.path:

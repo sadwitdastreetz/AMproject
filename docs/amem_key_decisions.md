@@ -356,3 +356,29 @@
 - 当前版本不会把整个 4096-token buffer 重复写入 archival，避免 overlap 区域在每次 flush 时被重复构造为 note
 - 后续仍需观察 FIFO 小 window 写入是否削弱 topic regrouping 的跨位置聚合能力
 - 这仍属于 Stage B prototype 的机制探索，不视为最终收口方案
+
+## 23. 关于 FIFO sliding buffer 默认基准结果的决定
+
+当前新增实验结论：
+
+1. 在 `factconsolidation_sh_32k + chunk_size=512 + 前50问` 上，FIFO sliding buffer 默认参数结果为：
+   - `exact_match = 0.4800`
+   - `f1 = 0.5247`
+   - `substring_exact_match = 0.5000`
+2. 它相比原始基线和阶段 A 仍有提升。
+3. 但它明显弱于 Stage B 整窗 flush：
+   - 整窗 flush：`exact_match = 0.5600`, `f1 = 0.6013`
+   - FIFO sliding：`exact_match = 0.4800`, `f1 = 0.5247`
+4. 结构上：
+   - 整窗 flush：`flush_windows = 8`, `archived_units = 205`
+   - FIFO sliding：`flush_windows = 58`, `archived_units = 278`
+
+当前判断：
+
+- FIFO sliding buffer 的语义更接近即时 memory evolution，但默认 `512-token` 小窗写入会削弱 topic regrouping 的跨 chunk 聚合能力
+- 小窗写入还会产生更多 archival units，可能增加 note 碎片化、检索噪声和 construction 成本
+- 因此不能把 FIFO sliding buffer 直接设为 Stage B 默认最终方案
+- 后续更值得测试的方向是：
+  - retrieval 仍用 4096-token recent buffer
+  - archival write 使用更大的 regrouping horizon
+  - 或者将 write trigger 与 write horizon 分离，避免每次只对 512-token 小窗做 topic regrouping

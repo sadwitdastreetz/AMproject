@@ -818,3 +818,86 @@
 - 这降低了 note duplication 风险
 - 但也意味着 topic regrouping 当前只作用于弹出的约 `512` token 小 window，可能削弱跨 buffer 的离散主题聚合能力
 - 后续实验需要单独观察该副作用
+
+## 2026-04-11 - Stage B sliding buffer 默认参数 50 问小基准
+
+目的：
+
+- 对比 Stage B 原整窗 flush 版本与 FIFO sliding buffer 版本
+- 检查“只把最早约 512-token 小 window 写入 archival，剩余 buffer 保留”的效果
+
+实验条件：
+
+- source：`factconsolidation_sh_32k`
+- model：`gpt-5.4-mini`
+- embedding：`openai/text-embedding-3-small`
+- provider：OpenRouter
+- `chunk_size = 512`
+- 前 `50` 问
+- 启用：
+  - short-term buffer
+  - recent-first dual retrieval
+  - topic regrouping
+  - FIFO sliding buffer
+- `recent_token_budget = 4096`
+- `recent_window_stride_tokens = 512`
+- `recent_window_overlap_tokens = 3584`
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_stageB_sliding_default_results.json`
+- `AgenticMemory/cr_sh_32k_50q_stageB_sliding_default_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_sliding_default_recenttrace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_sliding_default_grouptrace.jsonl`
+
+结果：
+
+- `exact_match = 0.4800`
+- `f1 = 0.5247`
+- `substring_exact_match = 0.5000`
+
+结构指标：
+
+- `chunks_ingested = 65`
+- `archived_units = 278`
+- `flush_windows = 58`
+- `recent_buffer_size = 7`
+- `recent_buffer_tokens = 3637`
+
+与对照相比：
+
+原始基线：
+
+- `exact_match = 0.4000`
+- `f1 = 0.4327`
+- `substring_exact_match = 0.4000`
+
+阶段 A：
+
+- `exact_match = 0.4400`
+- `f1 = 0.4793`
+- `substring_exact_match = 0.4600`
+
+Stage B 整窗 flush：
+
+- `exact_match = 0.5600`
+- `f1 = 0.6013`
+- `substring_exact_match = 0.5800`
+- `archived_units = 205`
+- `flush_windows = 8`
+
+Stage B FIFO sliding buffer：
+
+- `exact_match = 0.4800`
+- `f1 = 0.5247`
+- `substring_exact_match = 0.5000`
+- `archived_units = 278`
+- `flush_windows = 58`
+
+当前观察：
+
+- FIFO sliding buffer 仍优于原始基线和阶段 A
+- 但显著低于 Stage B 整窗 flush
+- 这说明只把最早约 512-token 小 window 送入 topic regrouping，可能削弱了 topic regrouping 的跨 chunk 离散主题聚合能力
+- 同时 archival units 增加到 `278`，说明小窗写入更碎，可能提高检索噪声或 note construction 成本
+- 当前结果不支持直接用 FIFO 512-token 小窗替代整窗 regrouping 作为默认 Stage B 方案
