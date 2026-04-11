@@ -404,3 +404,41 @@
 - 对默认 `4096` buffer，write horizon 变为约 `2048` tokens
 - 它避免整窗 4096 flush 的一次性大写入，也避免 512 小窗导致的过度碎片化
 - 关键待验证问题是：`2048` region 是否足够恢复 topic regrouping 的跨 chunk 聚合能力
+
+## 25. 关于 ping-pong buffer region size 的初步结论
+
+当前新增实验结论：
+
+1. `buffer=4096 / region=2048`：
+   - `exact_match = 0.4800`
+   - `f1 = 0.5270`
+   - `substring_exact_match = 0.5000`
+   - `flush_windows = 15`
+   - `archived_units = 268`
+2. `buffer=8192 / region=4096`：
+   - `exact_match = 0.5800`
+   - `f1 = 0.6133`
+   - `substring_exact_match = 0.6000`
+   - `flush_windows = 7`
+   - `archived_units = 180`
+3. 原计划 `buffer=2048 / region=1024` 本轮取消，不再运行。
+
+与关键对照相比：
+
+- Stage B 整窗 flush：
+  - `exact_match = 0.5600`
+  - `f1 = 0.6013`
+  - `substring_exact_match = 0.5800`
+- Stage B FIFO sliding：
+  - `exact_match = 0.4800`
+  - `f1 = 0.5247`
+  - `substring_exact_match = 0.5000`
+
+当前判断：
+
+- `2048` region 没有恢复 topic regrouping 的跨 chunk 聚合收益
+- `4096` region 当前表现最好，甚至略高于之前的 Stage B 整窗 flush
+- 当前更合理的默认候选是：
+  - `recent_token_budget = 8192`
+  - `recent_region_size = 4096`
+- 这说明 write horizon 对当前方法非常关键；如果 horizon 太小，ping-pong 机制本身不能弥补 topic regrouping 视野不足

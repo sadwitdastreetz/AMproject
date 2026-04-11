@@ -950,3 +950,103 @@ Stage B FIFO sliding buffer：
   - buffer `4096` / region `2048`
   - buffer `8192` / region `4096`
   - buffer `2048` / region `1024`
+
+## 2026-04-12 - Stage B ping-pong buffer 小基准
+
+目的：
+
+- 对比 ping-pong two-region buffer 与既有 Stage B 整窗 flush / FIFO sliding buffer
+- 检查 region size 对 topic regrouping 写入视野的影响
+
+共同实验条件：
+
+- source：`factconsolidation_sh_32k`
+- model：`gpt-5.4-mini`
+- embedding：`openai/text-embedding-3-small`
+- provider：OpenRouter
+- `chunk_size = 512`
+- 前 `50` 问
+- 启用：
+  - short-term buffer
+  - recent-first dual retrieval
+  - topic regrouping
+  - ping-pong two-region buffer
+
+### buffer 4096 / region 2048
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b4096_results.json`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b4096_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b4096_recenttrace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b4096_grouptrace.jsonl`
+
+结果：
+
+- `exact_match = 0.4800`
+- `f1 = 0.5270`
+- `substring_exact_match = 0.5000`
+
+结构指标：
+
+- `chunks_ingested = 65`
+- `recent_token_budget = 4096`
+- `recent_region_size = 2048`
+- `flush_windows = 15`
+- `archived_units = 268`
+- `recent_buffer_size = 5`
+- `recent_buffer_tokens = 2569`
+
+观察：
+
+- 相比 FIFO 512-token sliding buffer，指标基本接近
+- 虽然写入 horizon 从 512 提升到 2048，但仍未恢复整窗 4096 regrouping 的效果
+- archived units 仍偏多，说明 2048 region 对当前 FactConsolidation 可能仍然偏碎
+
+### buffer 8192 / region 4096
+
+结果文件：
+
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b8192_results.json`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b8192_trace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b8192_recenttrace.jsonl`
+- `AgenticMemory/cr_sh_32k_50q_stageB_pingpong_b8192_grouptrace.jsonl`
+
+结果：
+
+- `exact_match = 0.5800`
+- `f1 = 0.6133`
+- `substring_exact_match = 0.6000`
+
+结构指标：
+
+- `chunks_ingested = 65`
+- `recent_token_budget = 8192`
+- `recent_region_size = 4096`
+- `flush_windows = 7`
+- `archived_units = 180`
+- `recent_buffer_size = 9`
+- `recent_buffer_tokens = 4730`
+
+观察：
+
+- 当前结果优于 Stage B 整窗 flush：
+  - 整窗 flush：`exact_match = 0.5600`, `f1 = 0.6013`, `substring_exact_match = 0.5800`
+  - ping-pong 8192/4096：`exact_match = 0.5800`, `f1 = 0.6133`, `substring_exact_match = 0.6000`
+- 它也明显优于 ping-pong 4096/2048
+- 这支持一个更具体的判断：
+  - 当前 topic regrouping 的有效写入视野大约需要接近 `4096` tokens
+  - recent buffer 可以更大，用于保留短期裁决上下文
+
+### 取消 buffer 2048 / region 1024
+
+- 原计划第三组为 buffer `2048` / region `1024`
+- 由于用户中途调整实验范围，本轮不再运行该组
+- 从已有结果看，region 从 `2048` 增至 `4096` 后效果显著变好，因此 `1024` region 优先级暂时降低
+
+当前结论：
+
+- ping-pong 思路本身可行
+- 但关键不是“是否 ping-pong”，而是 archival write horizon 是否足够大
+- `4096/2048` 不足以超过整窗 flush
+- `8192/4096` 当前是 Stage B 系列里最好的小基准结果
