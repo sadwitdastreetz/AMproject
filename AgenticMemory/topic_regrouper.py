@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 from nltk.tokenize import sent_tokenize
-from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
@@ -69,7 +68,6 @@ class TopicRegrouper:
         similarity_threshold: float = 0.42,
         min_cluster_size: int = 2,
         reciprocal_top_k: int = 5,
-        max_cluster_sentences: int = 40,
         trace_path: Optional[str] = None,
     ):
         self.embedding_model = embedding_model
@@ -77,7 +75,6 @@ class TopicRegrouper:
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
         self.reciprocal_top_k = reciprocal_top_k
-        self.max_cluster_sentences = max_cluster_sentences
         self.trace_logger = GroupTraceLogger(trace_path)
 
     def _normalize_sentences(self, text: str) -> List[str]:
@@ -122,36 +119,12 @@ class TopicRegrouper:
                 global_idx += 1
         return units
 
-    def _split_oversized_cluster(
-        self,
-        cluster: List[SentenceUnit],
-        embeddings: np.ndarray,
-    ) -> tuple[List[List[SentenceUnit]], float]:
-        if len(cluster) <= self.max_cluster_sentences:
-            return [sorted(cluster, key=lambda unit: unit.global_idx)], 0.0
-
-        n_clusters = int(np.ceil(len(cluster) / self.max_cluster_sentences))
-        if n_clusters <= 1:
-            return [sorted(cluster, key=lambda unit: unit.global_idx)], 0.0
-
-        start_time = time.perf_counter()
-        kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init=10)
-        labels = kmeans.fit_predict(embeddings)
-        elapsed = time.perf_counter() - start_time
-        split_clusters: List[List[SentenceUnit]] = []
-        for label in sorted(set(labels)):
-            subgroup = [cluster[idx] for idx, assigned in enumerate(labels) if assigned == label]
-            subgroup = sorted(subgroup, key=lambda unit: unit.global_idx)
-            split_clusters.append(subgroup)
-        return split_clusters, elapsed
-
     def _cluster_units(self, units: List[SentenceUnit]) -> ClusteringResult:
         timings = {
             "embedding_seconds": 0.0,
             "similarity_seconds": 0.0,
             "graph_build_seconds": 0.0,
             "connected_components_seconds": 0.0,
-            "kmeans_split_seconds": 0.0,
         }
         if len(units) <= 1:
             start_time = time.perf_counter()
@@ -210,14 +183,7 @@ class TopicRegrouper:
         for cluster in small_clusters:
             large_clusters[0].extend(cluster)
             large_clusters[0].sort(key=lambda unit: unit.global_idx)
-        split_clusters: List[List[SentenceUnit]] = []
-        for cluster in large_clusters:
-            cluster_indices = [unit.global_idx for unit in cluster]
-            cluster_embeddings = embeddings[cluster_indices]
-            split_result, split_elapsed = self._split_oversized_cluster(cluster, cluster_embeddings)
-            timings["kmeans_split_seconds"] += split_elapsed
-            split_clusters.extend(split_result)
-        return ClusteringResult(split_clusters, timings)
+        return ClusteringResult(large_clusters, timings)
 
     def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
         total_start_time = time.perf_counter()
@@ -271,9 +237,9 @@ class TopicRegrouper:
                 "input_chunk_count": len(items),
                 "sentence_count": len(units),
                 "cluster_count": len(groups),
+                "clustering_strategy": "edge_pruning_connected_components",
                 "similarity_threshold": self.similarity_threshold,
                 "reciprocal_top_k": self.reciprocal_top_k,
-                "max_cluster_sentences": self.max_cluster_sentences,
                 "timing_seconds": timing_seconds,
                 "clusters": cluster_payload,
             },

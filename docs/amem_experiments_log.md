@@ -1050,3 +1050,65 @@ Stage B FIFO sliding buffer：
 - 但关键不是“是否 ping-pong”，而是 archival write horizon 是否足够大
 - `4096/2048` 不足以超过整窗 flush
 - `8192/4096` 当前是 Stage B 系列里最好的小基准结果
+
+## 2026-04-12 - Edge pruning + connected components 替代 KMeans baseline
+
+目的：
+
+- 移除 topic regrouping 中的 KMeans oversized-cluster split
+- 将其替换为更轻量、可解释的 graph baseline：
+  - reciprocal top-k edge pruning
+  - similarity threshold
+  - connected components
+
+代码变更：
+
+- `AgenticMemory/topic_regrouper.py`
+  - 删除 `sklearn.cluster.KMeans` 依赖
+  - 删除 `_split_oversized_cluster()`
+  - 删除 `kmeans_split_seconds`
+  - trace 中新增：
+    - `clustering_strategy = edge_pruning_connected_components`
+
+隔离 profiling 条件：
+
+- source：`factconsolidation_sh_32k`
+- `chunk_size = 512`
+- profiling window：`window_0000`
+- 输入 chunk：`chunk_0000` 到 `chunk_0007`
+- 输入句子数：`306`
+- embedding：`openai/text-embedding-3-small`
+
+产物：
+
+- `AgenticMemory/profile_topic_regrouping_edge_pruning_sh32k_window0_result.json`
+- `AgenticMemory/profile_topic_regrouping_edge_pruning_sh32k_window0_trace.jsonl`
+
+结果：
+
+- `groups_count = 25`
+- 最大 group 句子数：`121`
+- `total_seconds = 5.6586`
+- `embedding_seconds = 5.5965`
+- `similarity_seconds = 0.0063`
+- `graph_build_seconds = 0.0403`
+- `connected_components_seconds = 0.0004`
+
+与旧 KMeans profiling 对比：
+
+- 旧 KMeans 版本：
+  - `groups_count = 28`
+  - 最大 group 句子数约 `66`
+  - `total_seconds = 14.1450`
+  - `kmeans_split_seconds = 7.6426`
+- edge pruning baseline：
+  - `groups_count = 25`
+  - 最大 group 句子数 `121`
+  - `total_seconds = 5.6586`
+
+当前观察：
+
+- 新 baseline 明显更快
+- 但默认 `similarity_threshold=0.42` 与 `reciprocal_top_k=5` 仍会产生 giant cluster
+- 因此它目前只能视为轻量 baseline，不能直接视为优于 KMeans 的最终替代
+- 下一步如果跑完整 benchmark，应同时考虑提高阈值或降低 top-k 做 ablation

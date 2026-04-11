@@ -442,3 +442,36 @@
   - `recent_token_budget = 8192`
   - `recent_region_size = 4096`
 - 这说明 write horizon 对当前方法非常关键；如果 horizon 太小，ping-pong 机制本身不能弥补 topic regrouping 视野不足
+
+## 26. 关于 KMeans 替代 baseline 的决定
+
+当前新增决策：
+
+1. KMeans oversized-cluster split 不再作为默认理论机制表述。
+2. 新增轻量替代 baseline：
+   - edge pruning
+   - reciprocal top-k
+   - connected components
+3. 当前代码已移除 `KMeans` 路径，并在 trace 中记录：
+   - `clustering_strategy = edge_pruning_connected_components`
+
+profiling 观察：
+
+- edge pruning baseline 单 window 耗时：
+  - `total_seconds = 5.6586`
+- 旧 KMeans 版本单 window 耗时：
+  - `total_seconds = 14.1450`
+- 主要速度收益来自移除：
+  - `kmeans_split_seconds = 7.6426`
+
+当前风险：
+
+- 默认 `similarity_threshold = 0.42`
+- 默认 `reciprocal_top_k = 5`
+- 在 `window_0000` 上仍产生 `121` 句 giant cluster
+
+当前判断：
+
+- edge pruning + connected components 是更轻量、更可解释的 baseline
+- 但它当前不是最终方案
+- 后续需要做 threshold / top-k ablation，重点观察 giant cluster 是否能自然裂解
