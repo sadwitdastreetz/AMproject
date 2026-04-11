@@ -717,3 +717,58 @@
 - 在当前实现下，阶段 B 的 topic regrouping 不是“轻微改善”
 - 而是在 `SH 32k` 小基准上带来了非常明显的增益
 - 说明“recent-first + write-unit reorganization” 这个方向值得继续深挖
+
+## 2026-04-11 - Stage B topic regrouping 单-window 耗时 profiling
+
+目的：
+
+- 只测试一个 short-term flush window 的 topic regrouping 耗时
+- 与完整 benchmark runner 隔离
+- 不调用 A-Mem `add_note`
+- 不执行 QA
+- 不把 dataset 加载、runner 启动、recent retrieval 等额外开销混入 regrouping 内部计时
+
+测试条件：
+
+- worktree：`AMproject-stageB`
+- source：`factconsolidation_sh_32k`
+- `chunk_size = 512`
+- `recent_token_budget = 4096`
+- embedding：`openai/text-embedding-3-small`
+- provider：OpenRouter
+- window：`window_0000`
+- 输入 chunk：`chunk_0000` 到 `chunk_0007`
+- window token 数：`4348`
+- 输入句子数：`306`
+- 输出 topic groups：`28`
+
+产物：
+
+- `AgenticMemory/profile_topic_regrouping.py`
+- `AgenticMemory/profile_topic_regrouping_sh32k_window0_result.json`
+- `AgenticMemory/profile_topic_regrouping_sh32k_window0_trace.jsonl`
+
+内部耗时：
+
+- `sentence_split_seconds = 0.0211`
+- `embedding_seconds = 6.4161`
+- `similarity_seconds = 0.0097`
+- `graph_build_seconds = 0.0509`
+- `connected_components_seconds = 0.0006`
+- `kmeans_split_seconds = 7.6426`
+- `total_seconds = 14.1450`
+
+观察：
+
+- 这次命令 wall time 约 `53.8s`，但这包含 Python 启动、dataset 加载等外部成本
+- regrouping 内部计时应以 trace/result 中的 `timing_seconds.total_seconds = 14.1450` 为准
+- 当前主要耗时来自 embedding 调用和 oversized cluster 的 KMeans 拆分
+- 句子两两 cosine similarity 和 graph build 在本 window 上不是主要耗时
+- 这说明当前效率瓶颈不只在 O(n^2) similarity，也包括 embedding API latency 与 KMeans 工程补丁
+
+当前结论：
+
+- Stage B topic regrouping 仍不能收口为最终方法
+- 后续必须继续做效率与质量验证
+- `similarity_threshold`、`reciprocal_top_k`、`max_cluster_sentences`、KMeans 拆分策略都需要 ablation
+- 如果目标是即时 memory evolution，当前整窗 flush + API embedding + KMeans 拆分的成本需要继续优化

@@ -274,3 +274,56 @@
 
 - 阶段 B 已经显示出强于阶段 A 的额外增益
 - 说明 topic regrouping 不只是结构上可行，而且在当前 `SH 32k` 小基准上已有明显效果
+
+## 20. 关于阶段 B 不能过早收口的决定
+
+当前新增决策：
+
+1. 阶段 B 的 topic regrouping 目前仍是 prototype，不视为已完成方法。
+2. 当前实验只说明该方向在 `SH 32k` 小基准上有效，不足以证明其是稳定、可泛化、可即时部署的 memory evolution 机制。
+3. 后续优先关注：
+   - regrouping 运行时成本
+   - `similarity_threshold` ablation
+   - `reciprocal_top_k` ablation
+   - `max_cluster_sentences` 与 KMeans 拆大簇策略
+   - embedding 相似度受 FactConsolidation 模板句式影响的问题
+4. 当前不展开 MH 问题，优先把 SH 与 regrouping 机制本身分析清楚。
+
+## 21. 关于 topic regrouping 耗时记录的决定
+
+当前新增决策：
+
+1. `TopicRegrouper` 需要在 `grouptrace` 中记录内部阶段耗时。
+2. 耗时字段统一写入 `timing_seconds`：
+   - `sentence_split_seconds`
+   - `embedding_seconds`
+   - `similarity_seconds`
+   - `graph_build_seconds`
+   - `connected_components_seconds`
+   - `kmeans_split_seconds`
+   - `total_seconds`
+3. 单-window profiling 必须和正式实验 runner 隔离。
+4. 新增独立测试脚本：
+   - `AgenticMemory/profile_topic_regrouping.py`
+5. 该脚本只构造一个 short-term flush window 并调用 `TopicRegrouper.regroup()`，不执行：
+   - A-Mem note construction
+   - QA
+   - recent retrieval
+   - benchmark scoring
+
+当前 profiling 结果：
+
+- 测试：`factconsolidation_sh_32k + chunk_size=512 + token_budget=4096`
+- window：`window_0000`
+- 输入：8 个 benchmark chunks，306 个句子
+- 输出：28 个 topic groups
+- regrouping 内部总耗时：`14.1450s`
+- 主要耗时：
+  - embedding：`6.4161s`
+  - KMeans 拆大簇：`7.6426s`
+
+当前判断：
+
+- O(n^2) cosine similarity 是理论风险，但这次单-window profiling 中不是主耗时
+- 当前更直接的工程瓶颈是 API embedding latency 与 KMeans 拆大簇
+- KMeans 仍应视为工程补丁，不应作为强理论贡献表述

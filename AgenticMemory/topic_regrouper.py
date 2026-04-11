@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +54,12 @@ class TopicGroup:
     source_chunk_ids: List[str]
     sentence_indices: List[int]
     text: str
+
+
+@dataclass
+class ClusteringResult:
+    clusters: List[List[SentenceUnit]]
+    timings: Dict[str, float]
 
 
 class TopicRegrouper:
@@ -119,30 +126,48 @@ class TopicRegrouper:
         self,
         cluster: List[SentenceUnit],
         embeddings: np.ndarray,
-    ) -> List[List[SentenceUnit]]:
+    ) -> tuple[List[List[SentenceUnit]], float]:
         if len(cluster) <= self.max_cluster_sentences:
-            return [sorted(cluster, key=lambda unit: unit.global_idx)]
+            return [sorted(cluster, key=lambda unit: unit.global_idx)], 0.0
 
         n_clusters = int(np.ceil(len(cluster) / self.max_cluster_sentences))
         if n_clusters <= 1:
-            return [sorted(cluster, key=lambda unit: unit.global_idx)]
+            return [sorted(cluster, key=lambda unit: unit.global_idx)], 0.0
 
+        start_time = time.perf_counter()
         kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init=10)
         labels = kmeans.fit_predict(embeddings)
+        elapsed = time.perf_counter() - start_time
         split_clusters: List[List[SentenceUnit]] = []
         for label in sorted(set(labels)):
             subgroup = [cluster[idx] for idx, assigned in enumerate(labels) if assigned == label]
             subgroup = sorted(subgroup, key=lambda unit: unit.global_idx)
             split_clusters.append(subgroup)
-        return split_clusters
+        return split_clusters, elapsed
 
-    def _cluster_units(self, units: List[SentenceUnit]) -> tuple[List[List[SentenceUnit]], np.ndarray]:
+    def _cluster_units(self, units: List[SentenceUnit]) -> ClusteringResult:
+        timings = {
+            "embedding_seconds": 0.0,
+            "similarity_seconds": 0.0,
+            "graph_build_seconds": 0.0,
+            "connected_components_seconds": 0.0,
+            "kmeans_split_seconds": 0.0,
+        }
         if len(units) <= 1:
+            start_time = time.perf_counter()
             embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
-            return [units], embeddings
+            timings["embedding_seconds"] = time.perf_counter() - start_time
+            return ClusteringResult([units], timings)
 
+        start_time = time.perf_counter()
         embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
+        timings["embedding_seconds"] = time.perf_counter() - start_time
+
+        start_time = time.perf_counter()
         sim = cosine_similarity(embeddings)
+        timings["similarity_seconds"] = time.perf_counter() - start_time
+
+        start_time = time.perf_counter()
         adjacency = {idx: set() for idx in range(len(units))}
         neighbor_sets: List[set[int]] = []
         for i in range(len(units)):
@@ -155,7 +180,9 @@ class TopicRegrouper:
                 if sim[i, j] >= self.similarity_threshold and i in neighbor_sets[j] and j in neighbor_sets[i]:
                     adjacency[i].add(j)
                     adjacency[j].add(i)
+        timings["graph_build_seconds"] = time.perf_counter() - start_time
 
+        start_time = time.perf_counter()
         visited = set()
         clusters: List[List[SentenceUnit]] = []
         for idx in range(len(units)):
@@ -172,12 +199,13 @@ class TopicRegrouper:
                 stack.extend(adjacency[node] - visited)
             cluster_units = [units[i] for i in sorted(component, key=lambda x: units[x].global_idx)]
             clusters.append(cluster_units)
+        timings["connected_components_seconds"] = time.perf_counter() - start_time
 
         large_clusters = [cluster for cluster in clusters if len(cluster) >= self.min_cluster_size]
         small_clusters = [cluster for cluster in clusters if len(cluster) < self.min_cluster_size]
 
         if not large_clusters:
-            return [sorted(units, key=lambda unit: unit.global_idx)]
+            return ClusteringResult([sorted(units, key=lambda unit: unit.global_idx)], timings)
 
         for cluster in small_clusters:
             large_clusters[0].extend(cluster)
@@ -186,15 +214,21 @@ class TopicRegrouper:
         for cluster in large_clusters:
             cluster_indices = [unit.global_idx for unit in cluster]
             cluster_embeddings = embeddings[cluster_indices]
-            split_clusters.extend(self._split_oversized_cluster(cluster, cluster_embeddings))
-        return split_clusters, embeddings
+            split_result, split_elapsed = self._split_oversized_cluster(cluster, cluster_embeddings)
+            timings["kmeans_split_seconds"] += split_elapsed
+            split_clusters.extend(split_result)
+        return ClusteringResult(split_clusters, timings)
 
     def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
+        total_start_time = time.perf_counter()
+        sentence_start_time = time.perf_counter()
         units = self._to_sentence_units(items)
+        sentence_seconds = time.perf_counter() - sentence_start_time
         if not units:
             return []
 
-        clusters, embeddings = self._cluster_units(units)
+        clustering_result = self._cluster_units(units)
+        clusters = clustering_result.clusters
         groups: List[TopicGroup] = []
         cluster_payload = []
         for idx, cluster in enumerate(clusters):
@@ -224,6 +258,11 @@ class TopicRegrouper:
                 }
             )
 
+        timing_seconds = {
+            "sentence_split_seconds": sentence_seconds,
+            **clustering_result.timings,
+        }
+        timing_seconds["total_seconds"] = time.perf_counter() - total_start_time
         self.trace_logger.log(
             "topic_regrouping_complete",
             {
@@ -235,6 +274,7 @@ class TopicRegrouper:
                 "similarity_threshold": self.similarity_threshold,
                 "reciprocal_top_k": self.reciprocal_top_k,
                 "max_cluster_sentences": self.max_cluster_sentences,
+                "timing_seconds": timing_seconds,
                 "clusters": cluster_payload,
             },
         )
