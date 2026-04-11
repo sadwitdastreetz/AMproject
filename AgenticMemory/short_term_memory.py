@@ -64,10 +64,14 @@ class ShortTermMemoryBuffer:
     def __init__(
         self,
         token_budget: int = 4096,
+        overlap_tokens: Optional[int] = None,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         trace_path: Optional[str] = None,
     ):
         self.token_budget = token_budget
+        default_overlap = token_budget // 2
+        requested_overlap = default_overlap if overlap_tokens is None else max(0, overlap_tokens)
+        self.overlap_tokens = min(requested_overlap, max(0, token_budget - 1))
         self.token_counter = TokenCounter()
         self.trace_logger = RecentTraceLogger(trace_path)
         self.embedding_model = embedding_model
@@ -113,6 +117,20 @@ class ShortTermMemoryBuffer:
     def snapshot_items(self) -> List[RecentMemoryItem]:
         return list(self.items)
 
+    def _select_sliding_overlap(self) -> List[RecentMemoryItem]:
+        if self.overlap_tokens <= 0:
+            return []
+        kept_reversed = []
+        kept_tokens = 0
+        for item in reversed(self.items):
+            if kept_reversed and kept_tokens + item.token_count > self.overlap_tokens:
+                break
+            kept_reversed.append(item)
+            kept_tokens += item.token_count
+            if kept_tokens >= self.overlap_tokens:
+                break
+        return list(reversed(kept_reversed))
+
     def flush_window(self) -> tuple[str, List[RecentMemoryItem]]:
         window_id = f"window_{self.window_counter:04d}"
         items = self.snapshot_items()
@@ -122,19 +140,22 @@ class ShortTermMemoryBuffer:
                 "window_id": window_id,
                 "item_count": len(items),
                 "buffer_tokens": self.total_tokens,
+                "overlap_tokens": self.overlap_tokens,
                 "chunk_ids": [item.chunk_id for item in items],
             },
         )
-        self.items = []
-        self.total_tokens = 0
+        retained_items = self._select_sliding_overlap()
+        self.items = retained_items
+        self.total_tokens = sum(item.token_count for item in self.items)
         self.window_counter += 1
         self._rebuild_retriever()
         self.trace_logger.log(
-            "recent_flush_cleared",
+            "recent_flush_slid",
             {
                 "window_id": window_id,
-                "buffer_tokens_after_clear": self.total_tokens,
-                "buffer_size_after_clear": len(self.items),
+                "retained_chunk_ids": [item.chunk_id for item in self.items],
+                "buffer_tokens_after_slide": self.total_tokens,
+                "buffer_size_after_slide": len(self.items),
             },
         )
         return window_id, items

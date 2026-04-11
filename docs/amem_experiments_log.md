@@ -772,3 +772,42 @@
 - 后续必须继续做效率与质量验证
 - `similarity_threshold`、`reciprocal_top_k`、`max_cluster_sentences`、KMeans 拆分策略都需要 ablation
 - 如果目标是即时 memory evolution，当前整窗 flush + API embedding + KMeans 拆分的成本需要继续优化
+
+## 2026-04-11 - Stage B sliding window flush 机制改造
+
+目的：
+
+- 将 short-term buffer 从“满窗 flush 后清空”改为“滑动窗口”
+- 为后续即时 memory evolution 和更连续的 topic regrouping 做准备
+
+代码变更：
+
+- `AgenticMemory/short_term_memory.py`
+  - 新增 `overlap_tokens`
+  - `flush_window()` 改为 flush 后保留最近 overlap 尾部
+  - trace event 从 `recent_flush_cleared` 改为 `recent_flush_slid`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - 新增 CLI 参数 `--recent-window-overlap-tokens`
+  - 结果 JSON 记录 `recent_window_overlap_tokens`
+
+默认设置：
+
+- `recent_token_budget = 4096`
+- `recent_window_overlap_tokens = 2048`
+- overlap 会被 clamp 到 `< token_budget`
+
+验证：
+
+- `py_compile` 通过：
+  - `short_term_memory.py`
+  - `memoryagentbench_cr_runner.py`
+  - `profile_topic_regrouping.py`
+- 隔离逻辑测试确认：
+  - flush 后 buffer 不再清空
+  - 会保留最近尾部 item 进入下一窗口
+
+注意：
+
+- 滑动窗口会让 overlap 区域重复参与 archival construction
+- 这可能带来 note duplication 和写入成本增加
+- 后续实验需要单独观察该副作用
