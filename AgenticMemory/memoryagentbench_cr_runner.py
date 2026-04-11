@@ -99,6 +99,9 @@ class AMemConflictResolutionAgent:
         flush_record = {
             "window_id": window_id,
             "source_chunk_ids": [item.chunk_id for item in items],
+            "flushed_tokens": sum(item.token_count for item in items),
+            "retained_buffer_chunk_ids": [item.chunk_id for item in self.recent_memory.items],
+            "retained_buffer_tokens": self.recent_memory.total_tokens,
             "mode": "topic_regrouping" if self.enable_topic_regrouping else "raw_chunk_archive",
             "topic_ids": [],
         }

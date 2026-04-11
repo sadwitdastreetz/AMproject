@@ -777,14 +777,15 @@
 
 目的：
 
-- 将 short-term buffer 从“满窗 flush 后清空”改为“滑动窗口”
+- 将 short-term buffer 从“满窗 flush 后清空”改为“FIFO 滑动 buffer”
 - 为后续即时 memory evolution 和更连续的 topic regrouping 做准备
 
 代码变更：
 
 - `AgenticMemory/short_term_memory.py`
   - 新增 `overlap_tokens`
-  - `flush_window()` 改为 flush 后保留最近 overlap 尾部
+  - `flush_window()` 改为只弹出最早的 stride window
+  - 剩余 buffer 内容保留，但不参与本次 archival write
   - trace event 从 `recent_flush_cleared` 改为 `recent_flush_slid`
 - `AgenticMemory/memoryagentbench_cr_runner.py`
   - 新增 CLI 参数 `--recent-window-overlap-tokens`
@@ -805,13 +806,15 @@
   - `profile_topic_regrouping.py`
 - 隔离逻辑测试确认：
   - flush 后 buffer 不再清空
-  - 会保留最近尾部 item 进入下一窗口
+  - 本次只写入最早的 stride window
+  - 其余 item 保留在 short-term buffer
 - 语义修正：
   - 4096-token buffer 在当前 `chunk_size=512` 设置下应表示最近约 8 个 chunk
   - 默认滑动步长应接近 1 个 benchmark chunk，而不是半窗
 
 注意：
 
-- 滑动窗口会让 overlap 区域重复参与 archival construction
-- 这可能带来 note duplication 和写入成本增加
+- 当前版本不把保留的约 `3584` tokens 重复写入 archival
+- 这降低了 note duplication 风险
+- 但也意味着 topic regrouping 当前只作用于弹出的约 `512` token 小 window，可能削弱跨 buffer 的离散主题聚合能力
 - 后续实验需要单独观察该副作用

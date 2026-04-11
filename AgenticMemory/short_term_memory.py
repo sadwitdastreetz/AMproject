@@ -119,35 +119,39 @@ class ShortTermMemoryBuffer:
     def snapshot_items(self) -> List[RecentMemoryItem]:
         return list(self.items)
 
-    def _select_sliding_overlap(self) -> List[RecentMemoryItem]:
-        if self.overlap_tokens <= 0:
-            return []
-        kept_reversed = []
-        kept_tokens = 0
-        for item in reversed(self.items):
-            if kept_reversed and kept_tokens + item.token_count > self.overlap_tokens:
+    def _pop_oldest_stride_window(self) -> tuple[List[RecentMemoryItem], List[RecentMemoryItem]]:
+        if not self.items:
+            return [], []
+
+        flush_count = 0
+        flush_tokens = 0
+        for item in self.items:
+            if flush_count > 0 and flush_tokens + item.token_count > self.stride_tokens:
                 break
-            kept_reversed.append(item)
-            kept_tokens += item.token_count
-            if kept_tokens >= self.overlap_tokens:
+            flush_count += 1
+            flush_tokens += item.token_count
+            if flush_tokens >= self.stride_tokens:
                 break
-        return list(reversed(kept_reversed))
+
+        return self.items[:flush_count], self.items[flush_count:]
 
     def flush_window(self) -> tuple[str, List[RecentMemoryItem]]:
         window_id = f"window_{self.window_counter:04d}"
-        items = self.snapshot_items()
+        buffer_items = self.snapshot_items()
+        flush_items, retained_items = self._pop_oldest_stride_window()
         self.trace_logger.log(
             "recent_flush_started",
             {
                 "window_id": window_id,
-                "item_count": len(items),
+                "buffer_item_count": len(buffer_items),
+                "flush_item_count": len(flush_items),
                 "buffer_tokens": self.total_tokens,
                 "overlap_tokens": self.overlap_tokens,
                 "stride_tokens": self.stride_tokens,
-                "chunk_ids": [item.chunk_id for item in items],
+                "buffer_chunk_ids": [item.chunk_id for item in buffer_items],
+                "flush_chunk_ids": [item.chunk_id for item in flush_items],
             },
         )
-        retained_items = self._select_sliding_overlap()
         self.items = retained_items
         self.total_tokens = sum(item.token_count for item in self.items)
         self.window_counter += 1
@@ -161,7 +165,7 @@ class ShortTermMemoryBuffer:
                 "buffer_size_after_slide": len(self.items),
             },
         )
-        return window_id, items
+        return window_id, flush_items
 
     def retrieve(self, query: str, k: int = 5) -> List[RecentMemoryItem]:
         if not self.items:

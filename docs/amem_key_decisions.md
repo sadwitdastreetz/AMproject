@@ -333,14 +333,16 @@
 当前新增决策：
 
 1. Stage B 的 short-term buffer flush 不再采用“整窗 flush 后清空”。
-2. 改为 sliding window：
-   - flush 时仍然把当前窗口送入 topic regrouping
-   - flush 后保留最近一段 overlap 作为下一窗口的上下文尾部
+2. 改为 FIFO sliding buffer：
+   - buffer 容量仍约为 `4096` tokens
+   - buffer 满后，只把最早进入 buffer 的约 `512` token 小 window 送入 topic regrouping / archival write
+   - 剩余约 `3584` tokens 继续保留在 short-term buffer 中
+   - 保留部分不参与本次 archival construction
 3. 默认 overlap 策略：
    - `recent_token_budget = 4096`
    - `recent_window_stride_tokens = 512`
    - `recent_window_overlap_tokens = 3584`
-   - 即默认每次滑动约一个 benchmark chunk 的宽度
+   - 即默认每次弹出并写入最早的约一个 benchmark chunk 宽度
 4. overlap 参数接入 runner：
    - `--recent-window-overlap-tokens`
    - `--recent-window-stride-tokens`
@@ -351,5 +353,6 @@
 
 - 滑动窗口更接近即时 memory evolution 场景，不再把 flush window 视为彼此完全割裂的 batch
 - 对当前 `chunk_size=512` 设置，4096-token buffer 应被理解为最近约 8 个 chunk 的短期窗口，而不是每次 flush 后丢弃半个 buffer
-- 代价是 overlap 区域可能被重复进入 archival construction，后续需要观察 archival note duplication 与成本膨胀问题
+- 当前版本不会把整个 4096-token buffer 重复写入 archival，避免 overlap 区域在每次 flush 时被重复构造为 note
+- 后续仍需观察 FIFO 小 window 写入是否削弱 topic regrouping 的跨位置聚合能力
 - 这仍属于 Stage B prototype 的机制探索，不视为最终收口方案
