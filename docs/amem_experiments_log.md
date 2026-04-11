@@ -901,3 +901,52 @@ Stage B FIFO sliding buffer：
 - 这说明只把最早约 512-token 小 window 送入 topic regrouping，可能削弱了 topic regrouping 的跨 chunk 离散主题聚合能力
 - 同时 archival units 增加到 `278`，说明小窗写入更碎，可能提高检索噪声或 note construction 成本
 - 当前结果不支持直接用 FIFO 512-token 小窗替代整窗 regrouping 作为默认 Stage B 方案
+
+## 2026-04-11 - Stage B ping-pong two-region buffer 实现
+
+目的：
+
+- 替换 FIFO 512-token sliding write
+- 使用类似复制式 GC 的 two-region ping-pong buffer
+- 只暴露总 buffer size，region size 固定为总 buffer 的一半
+
+机制：
+
+- `recent_token_budget = buffer_size`
+- `recent_region_size = buffer_size / 2`
+- 先写 region A
+- region A 满后写 region B
+- region B 满后 flush region A 到 topic regrouping / archival，并清空 region A
+- 接着写 region A
+- region A 满后 flush region B
+- 以此交替
+
+代码变更：
+
+- `AgenticMemory/short_term_memory.py`
+  - 新增 `regions`
+  - 新增 `region_tokens`
+  - 新增 `region_full`
+  - 新增 `active_region`
+  - 新增 `pending_flush_region`
+  - `flush_window()` 改为只 flush 待清空 region
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - 移除主实验参数中的 sliding stride / overlap 语义
+  - 结果 JSON 记录 `recent_region_size`
+  - `flush_history` 记录 region flush 后的 buffer 状态
+
+验证：
+
+- `py_compile` 通过
+- 隔离逻辑测试通过：
+  - `4096` buffer 下 region size 为 `2048`
+  - 第一次 flush 写入 `chunk_0000` 到 `chunk_0003`
+  - 保留 `chunk_0004` 到 `chunk_0007`
+  - 下一轮 flush 写入 `chunk_0004` 到 `chunk_0007`
+
+下一步实验：
+
+- 跑三组 `factconsolidation_sh_32k + chunk_size=512 + 前50问`：
+  - buffer `4096` / region `2048`
+  - buffer `8192` / region `4096`
+  - buffer `2048` / region `1024`

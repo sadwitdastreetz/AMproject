@@ -37,8 +37,6 @@ class AMemConflictResolutionAgent:
         recent_trace_path: str | None = None,
         group_trace_path: str | None = None,
         recent_token_budget: int = 4096,
-        recent_window_overlap_tokens: int | None = None,
-        recent_window_stride_tokens: int = 512,
         recent_k: int = 5,
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
@@ -62,8 +60,6 @@ class AMemConflictResolutionAgent:
         self.query_template = get_template("factconsolidation_sh_6k", "query", "Agentic_memory")
         self.recent_memory = ShortTermMemoryBuffer(
             token_budget=recent_token_budget,
-            overlap_tokens=recent_window_overlap_tokens,
-            stride_tokens=recent_window_stride_tokens,
             embedding_model=embedding_model,
             trace_path=recent_trace_path,
         )
@@ -103,6 +99,9 @@ class AMemConflictResolutionAgent:
             "window_id": window_id,
             "source_chunk_ids": [item.chunk_id for item in items],
             "flushed_tokens": sum(item.token_count for item in items),
+            "region_size": self.recent_memory.region_size,
+            "active_region_after_flush": self.recent_memory.active_region,
+            "region_tokens_after_flush": list(self.recent_memory.region_tokens),
             "retained_buffer_chunk_ids": [item.chunk_id for item in self.recent_memory.items],
             "retained_buffer_tokens": self.recent_memory.total_tokens,
             "mode": "topic_regrouping" if self.enable_topic_regrouping else "raw_chunk_archive",
@@ -202,8 +201,6 @@ def main():
     parser.add_argument("--recent-trace-path", default=None)
     parser.add_argument("--group-trace-path", default=None)
     parser.add_argument("--recent-token-budget", type=int, default=4096)
-    parser.add_argument("--recent-window-overlap-tokens", type=int, default=None)
-    parser.add_argument("--recent-window-stride-tokens", type=int, default=512)
     parser.add_argument("--recent-k", type=int, default=5)
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
@@ -220,8 +217,6 @@ def main():
         recent_trace_path=args.recent_trace_path,
         group_trace_path=args.group_trace_path,
         recent_token_budget=args.recent_token_budget,
-        recent_window_overlap_tokens=args.recent_window_overlap_tokens,
-        recent_window_stride_tokens=args.recent_window_stride_tokens,
         recent_k=args.recent_k,
         enable_topic_regrouping=args.enable_topic_regrouping,
         regroup_similarity_threshold=args.regroup_similarity_threshold,
@@ -272,8 +267,7 @@ def main():
         "retrieve_k": args.retrieve_k,
         "recent_k": args.recent_k,
         "recent_token_budget": args.recent_token_budget,
-        "recent_window_overlap_tokens": agent.recent_memory.overlap_tokens,
-        "recent_window_stride_tokens": agent.recent_memory.stride_tokens,
+        "recent_region_size": agent.recent_memory.region_size,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),

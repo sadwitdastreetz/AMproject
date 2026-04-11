@@ -382,3 +382,25 @@
   - retrieval 仍用 4096-token recent buffer
   - archival write 使用更大的 regrouping horizon
   - 或者将 write trigger 与 write horizon 分离，避免每次只对 512-token 小窗做 topic regrouping
+
+## 24. 关于改用 ping-pong two-region buffer 的决定
+
+当前新增决策：
+
+1. 放弃 FIFO 512-token sliding write 作为当前 Stage B 主方案。
+2. 改用类似复制式 GC 的 two-region ping-pong buffer：
+   - 总 buffer 大小由 `--recent-token-budget` 控制
+   - region 大小固定为 `recent_token_budget / 2`
+   - 每次只写入当前 active region
+   - 当两个 region 都满后，flush 更早写满的 region 到 topic regrouping / archival
+   - 被 flush 的 region 清空，并成为新的 active region
+3. runner 对外只保留一个关键参数：
+   - `--recent-token-budget`
+4. region size 不单独暴露为实验参数，避免把变量拆太碎。
+
+当前判断：
+
+- 相比 FIFO 512-token 小窗写入，ping-pong region 能把 archival write horizon 提升到半个 buffer
+- 对默认 `4096` buffer，write horizon 变为约 `2048` tokens
+- 它避免整窗 4096 flush 的一次性大写入，也避免 512 小窗导致的过度碎片化
+- 关键待验证问题是：`2048` region 是否足够恢复 topic regrouping 的跨 chunk 聚合能力
