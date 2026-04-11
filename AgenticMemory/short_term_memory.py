@@ -65,11 +65,13 @@ class ShortTermMemoryBuffer:
         self,
         token_budget: int = 4096,
         overlap_tokens: Optional[int] = None,
+        stride_tokens: int = 512,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         trace_path: Optional[str] = None,
     ):
         self.token_budget = token_budget
-        default_overlap = token_budget // 2
+        self.stride_tokens = max(1, stride_tokens)
+        default_overlap = max(0, token_budget - self.stride_tokens)
         requested_overlap = default_overlap if overlap_tokens is None else max(0, overlap_tokens)
         self.overlap_tokens = min(requested_overlap, max(0, token_budget - 1))
         self.token_counter = TokenCounter()
@@ -141,6 +143,7 @@ class ShortTermMemoryBuffer:
                 "item_count": len(items),
                 "buffer_tokens": self.total_tokens,
                 "overlap_tokens": self.overlap_tokens,
+                "stride_tokens": self.stride_tokens,
                 "chunk_ids": [item.chunk_id for item in items],
             },
         )

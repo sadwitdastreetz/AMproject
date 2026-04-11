@@ -338,15 +338,18 @@
    - flush 后保留最近一段 overlap 作为下一窗口的上下文尾部
 3. 默认 overlap 策略：
    - `recent_token_budget = 4096`
-   - `recent_window_overlap_tokens = 2048`
-   - 即默认半窗重叠
+   - `recent_window_stride_tokens = 512`
+   - `recent_window_overlap_tokens = 3584`
+   - 即默认每次滑动约一个 benchmark chunk 的宽度
 4. overlap 参数接入 runner：
    - `--recent-window-overlap-tokens`
+   - `--recent-window-stride-tokens`
 5. 为避免 pathological case：
    - overlap 会被 clamp 到 `< token_budget`
 
 当前判断：
 
 - 滑动窗口更接近即时 memory evolution 场景，不再把 flush window 视为彼此完全割裂的 batch
+- 对当前 `chunk_size=512` 设置，4096-token buffer 应被理解为最近约 8 个 chunk 的短期窗口，而不是每次 flush 后丢弃半个 buffer
 - 代价是 overlap 区域可能被重复进入 archival construction，后续需要观察 archival note duplication 与成本膨胀问题
 - 这仍属于 Stage B prototype 的机制探索，不视为最终收口方案

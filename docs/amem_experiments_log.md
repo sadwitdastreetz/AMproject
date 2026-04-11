@@ -793,7 +793,8 @@
 默认设置：
 
 - `recent_token_budget = 4096`
-- `recent_window_overlap_tokens = 2048`
+- `recent_window_stride_tokens = 512`
+- `recent_window_overlap_tokens = 3584`
 - overlap 会被 clamp 到 `< token_budget`
 
 验证：
@@ -805,6 +806,9 @@
 - 隔离逻辑测试确认：
   - flush 后 buffer 不再清空
   - 会保留最近尾部 item 进入下一窗口
+- 语义修正：
+  - 4096-token buffer 在当前 `chunk_size=512` 设置下应表示最近约 8 个 chunk
+  - 默认滑动步长应接近 1 个 benchmark chunk，而不是半窗
 
 注意：
 
