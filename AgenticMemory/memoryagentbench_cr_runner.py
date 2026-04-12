@@ -11,7 +11,6 @@ from memory_layer_robust import RobustAgenticMemorySystem, RobustLLMController
 from short_term_memory import ShortTermMemoryBuffer
 from test_advanced_robust import parse_plain_text_answer
 from topic_regrouper import TopicRegrouper
-from unitization_router import AgenticUnitizationRouter, SUPPORTED_UNITIZATION_MODES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -42,9 +41,6 @@ class AMemConflictResolutionAgent:
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
         regroup_min_cluster_size: int = 2,
-        regroup_unitization_mode: str = "auto_agentic",
-        unitization_router_preview_chars: int = 4000,
-        unitization_router_fail_on_error: bool = True,
     ):
         self.memory_system = RobustAgenticMemorySystem(
             model_name=embedding_model,
@@ -72,19 +68,7 @@ class AMemConflictResolutionAgent:
             embedding_model=embedding_model,
             similarity_threshold=regroup_similarity_threshold,
             min_cluster_size=regroup_min_cluster_size,
-            unitization_mode=(
-                "fact_sentence"
-                if regroup_unitization_mode == "auto_agentic"
-                else regroup_unitization_mode
-            ),
             trace_path=group_trace_path,
-        )
-        self.regroup_unitization_mode = regroup_unitization_mode
-        self.unitization_router = AgenticUnitizationRouter(
-            llm_controller=self.retriever_llm,
-            preview_chars=unitization_router_preview_chars,
-            default_mode="chunk",
-            fail_on_error=unitization_router_fail_on_error,
         )
         self.embedding_model = embedding_model
         self.source_name = ""
@@ -127,24 +111,7 @@ class AMemConflictResolutionAgent:
             "topic_ids": [],
         }
         if self.enable_topic_regrouping:
-            unitization_decision = None
-            active_unitization_mode = self.regroup_unitization_mode
-            if self.regroup_unitization_mode == "auto_agentic":
-                decision = self.unitization_router.decide(
-                    window_id=window_id,
-                    turns=turns,
-                    source=self.source_name,
-                )
-                unitization_decision = decision.to_dict()
-                active_unitization_mode = decision.mode
-            groups = self.topic_regrouper.regroup(
-                window_id,
-                turns,
-                unitization_mode=active_unitization_mode,
-                unitization_decision=unitization_decision,
-            )
-            flush_record["unitization_mode"] = active_unitization_mode
-            flush_record["unitization_decision"] = unitization_decision
+            groups = self.topic_regrouper.regroup(window_id, turns)
             if groups:
                 self._archive_topic_groups(window_id, groups)
                 flush_record["topic_ids"] = [group.topic_id for group in groups]
@@ -243,21 +210,6 @@ def main():
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
     parser.add_argument("--regroup-min-cluster-size", type=int, default=2)
-    parser.add_argument(
-        "--regroup-unitization-mode",
-        default="auto_agentic",
-        choices=["auto_agentic", *sorted(SUPPORTED_UNITIZATION_MODES)],
-        help=(
-            "Local unit type used before topic regrouping. auto_agentic asks the LLM "
-            "to choose per flush window; fixed values are for ablation/reproducibility."
-        ),
-    )
-    parser.add_argument("--unitization-router-preview-chars", type=int, default=4000)
-    parser.add_argument(
-        "--allow-unitization-router-fallback",
-        action="store_true",
-        help="If set, router failures fall back to chunk mode instead of stopping the run.",
-    )
     args = parser.parse_args()
 
     row = load_conflict_resolution_row(args.source)
@@ -274,9 +226,6 @@ def main():
         enable_topic_regrouping=args.enable_topic_regrouping,
         regroup_similarity_threshold=args.regroup_similarity_threshold,
         regroup_min_cluster_size=args.regroup_min_cluster_size,
-        regroup_unitization_mode=args.regroup_unitization_mode,
-        unitization_router_preview_chars=args.unitization_router_preview_chars,
-        unitization_router_fail_on_error=not args.allow_unitization_router_fallback,
     )
     agent.source_name = args.source
     chunks = agent.ingest_chunks(row["context"], chunk_size=args.chunk_size)
@@ -326,7 +275,6 @@ def main():
         "recent_token_budget": args.recent_token_budget,
         "recent_region_size": agent.recent_memory.region_size,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
-        "regroup_unitization_mode": args.regroup_unitization_mode,
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,

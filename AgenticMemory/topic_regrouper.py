@@ -12,7 +12,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
 from short_term_memory import MemoryTurn
-from unitization_router import SUPPORTED_UNITIZATION_MODES
 
 
 def _preview_text(text: str, limit: int = 180) -> str:
@@ -82,7 +81,6 @@ class TopicRegrouper:
         similarity_threshold: float = 0.42,
         min_cluster_size: int = 2,
         reciprocal_top_k: int = 5,
-        unitization_mode: str = "fact_sentence",
         trace_path: Optional[str] = None,
     ):
         self.embedding_model = embedding_model
@@ -90,9 +88,6 @@ class TopicRegrouper:
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
         self.reciprocal_top_k = reciprocal_top_k
-        self.unitization_mode = unitization_mode
-        if self.unitization_mode not in SUPPORTED_UNITIZATION_MODES:
-            raise ValueError(f"Unsupported unitization_mode '{self.unitization_mode}'.")
         self.partition_candidates = [
             (None, reciprocal_top_k),
             (0.0, 5),
@@ -129,66 +124,13 @@ class TopicRegrouper:
                 merged.append(pending_prefix)
         return merged or [text.strip()]
 
-    def _paragraph_units(self, text: str) -> List[str]:
-        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-        return paragraphs or [text.strip()]
-
-    def _dialogue_turn_units(self, text: str) -> List[str]:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        turns: List[str] = []
-        current: List[str] = []
-        turn_start = re.compile(r"^(?:<[^>]+>|(?:User|Assistant|System|Human|AI|Recommender|Customer)\s*:)", re.I)
-        for line in lines:
-            if turn_start.match(line) and current:
-                turns.append(" ".join(current).strip())
-                current = [line]
-            else:
-                current.append(line)
-        if current:
-            turns.append(" ".join(current).strip())
-        if len(turns) > 1:
-            return turns
-        return self._paragraph_units(text)
-
-    def _example_units(self, text: str) -> List[str]:
-        examples = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
-        if len(examples) > 1:
-            return examples
-        label_starts = list(re.finditer(r"(?im)^(?:example\s*\d+|utterance|question|text)\s*[:：]", text))
-        if len(label_starts) > 1:
-            units = []
-            for idx, match in enumerate(label_starts):
-                start = match.start()
-                end = label_starts[idx + 1].start() if idx + 1 < len(label_starts) else len(text)
-                units.append(text[start:end].strip())
-            return [unit for unit in units if unit]
-        return self._paragraph_units(text)
-
-    def _chunk_units(self, text: str) -> List[str]:
-        stripped = text.strip()
-        return [stripped] if stripped else []
-
-    def _turn_to_unit_texts(self, turn: MemoryTurn, unitization_mode: str) -> tuple[str, List[str]]:
-        if unitization_mode in {"fact_sentence", "sentence"}:
-            return "fact_sentence", self._normalize_sentence_units(turn.raw_context)
-        if unitization_mode == "dialogue_turn":
-            return "dialogue_turn", self._dialogue_turn_units(turn.raw_context)
-        if unitization_mode == "paragraph":
-            return "paragraph", self._paragraph_units(turn.raw_context)
-        if unitization_mode == "example":
-            return "example", self._example_units(turn.raw_context)
-        if unitization_mode == "chunk":
-            return "chunk", self._chunk_units(turn.raw_context)
-        raise ValueError(
-            f"Unknown unitization_mode '{unitization_mode}'. "
-            f"Supported modes: {sorted(SUPPORTED_UNITIZATION_MODES)}."
-        )
-
-    def _to_units(self, turns: Sequence[MemoryTurn], unitization_mode: str) -> List[RegroupUnit]:
+    def _to_units(self, turns: Sequence[MemoryTurn]) -> List[RegroupUnit]:
+        """Legacy CR regrouping path: split each MemoryTurn raw context without changing the turn buffer."""
         units: List[RegroupUnit] = []
         global_idx = 0
         for turn in turns:
-            unit_type, unit_texts = self._turn_to_unit_texts(turn, unitization_mode)
+            unit_type = "fact_sentence"
+            unit_texts = self._normalize_sentence_units(turn.raw_context)
             for local_idx, unit_text in enumerate(unit_texts):
                 units.append(
                     RegroupUnit(
@@ -419,16 +361,11 @@ class TopicRegrouper:
         self,
         window_id: str,
         turns: Sequence[MemoryTurn],
-        unitization_mode: Optional[str] = None,
-        unitization_decision: Optional[Dict[str, Any]] = None,
     ) -> List[TopicGroup]:
-        active_unitization_mode = unitization_mode or self.unitization_mode
-        if active_unitization_mode not in SUPPORTED_UNITIZATION_MODES:
-            raise ValueError(f"Unsupported unitization_mode '{active_unitization_mode}'.")
         total_start_time = time.perf_counter()
-        unit_start_time = time.perf_counter()
-        units = self._to_units(turns, active_unitization_mode)
-        unitization_seconds = time.perf_counter() - unit_start_time
+        split_start_time = time.perf_counter()
+        units = self._to_units(turns)
+        local_split_seconds = time.perf_counter() - split_start_time
         if not units:
             return []
 
@@ -463,14 +400,14 @@ class TopicRegrouper:
                     "sentence_indices": [unit.global_idx for unit in cluster],
                     "unit_count": len(cluster),
                     "sentence_count": len(cluster),
-                    "unit_type": cluster[0].unit_type if cluster else self.unitization_mode,
+                    "unit_type": cluster[0].unit_type if cluster else "fact_sentence",
                     "content_preview": _preview_text(text),
                 }
             )
 
         timing_seconds = {
-            "unitization_seconds": unitization_seconds,
-            "sentence_split_seconds": unitization_seconds,
+            "local_split_seconds": local_split_seconds,
+            "sentence_split_seconds": local_split_seconds,
             **clustering_result.timings,
         }
         timing_seconds["total_seconds"] = time.perf_counter() - total_start_time
@@ -482,8 +419,6 @@ class TopicRegrouper:
                 "input_turn_count": len(turns),
                 "input_chunk_ids": [turn.turn_id for turn in turns],
                 "input_chunk_count": len(turns),
-                "unitization_mode": active_unitization_mode,
-                "unitization_decision": unitization_decision,
                 "unit_count": len(units),
                 "sentence_count": len(units),
                 "cluster_count": len(groups),

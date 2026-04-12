@@ -1,5 +1,42 @@
 # A-Mem Code Changes
 
+## 2026-04-13 - Remove unitization router and keep MemoryTurn ping-pong buffer
+
+更新范围：
+
+- `AgenticMemory/short_term_memory.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+- `AgenticMemory/topic_regrouper.py`
+- `AgenticMemory/profile_topic_regrouping.py`
+- `AgenticMemory/unitization_router.py`
+
+主要变更：
+
+- 删除临时试探性的 `AgenticMemory/unitization_router.py`
+- 移除 `--regroup-unitization-mode`, `--unitization-router-preview-chars`, `--allow-unitization-router-fallback`
+- 移除 `MemoryTurn.unitization_decision`
+- 移除 runner / group trace 中的 `unitization_decision` 和 `unitization_mode`
+- 保留 `MemoryTurn` 作为 short-term ping-pong buffer 的基本对象
+- 保留 ingest 时立即生成官方 `formatted_turn`
+- 保留 `ShortTermMemoryBuffer.regions: List[List[MemoryTurn]]`
+- `TopicRegrouper` 暂时退回为 legacy CR regrouping：输入仍是 `List[MemoryTurn]`，但内部只对 `raw_context` 做本地 factual/sentence split
+
+设计含义：
+
+- 当前不再把 agentic unitization router 作为已确认方向
+- 后续若推进 `MemoryTurn -> sliding window over turns -> List[MemoryUnit]`，应新建更清晰的 memory-unit decomposition 模块，而不是继续扩展旧的 `unitization_mode` 分支
+
+验证：
+
+- `py_compile` 通过：
+  - `AgenticMemory/short_term_memory.py`
+  - `AgenticMemory/topic_regrouper.py`
+  - `AgenticMemory/memoryagentbench_cr_runner.py`
+  - `AgenticMemory/profile_topic_regrouping.py`
+- CR runner help 已确认不再暴露 unitization router 相关参数
+- profile script help 已确认不再暴露 `--regroup-unitization-mode`
+- 隔离结构 smoke test 通过：`ShortTermMemoryBuffer` 保存 `MemoryTurn`，recent prompt 保留 official formatted turn，ping-pong flush 信号正常
+
 ## 2026-04-12 - Format-aware regrouping unitization
 
 更新范围：

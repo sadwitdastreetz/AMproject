@@ -9,7 +9,6 @@ from datasets import load_dataset
 from memory_layer import DEFAULT_EMBEDDING_MODEL
 from short_term_memory import MemoryTurn, TokenCounter
 from topic_regrouper import TopicRegrouper
-from unitization_router import SUPPORTED_UNITIZATION_MODES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -46,11 +45,6 @@ def main():
     )
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
     parser.add_argument("--regroup-min-cluster-size", type=int, default=2)
-    parser.add_argument(
-        "--regroup-unitization-mode",
-        default="fact_sentence",
-        choices=sorted(SUPPORTED_UNITIZATION_MODES),
-    )
     parser.add_argument("--trace-path", default="profile_topic_regrouping_trace.jsonl")
     parser.add_argument("--output", default="profile_topic_regrouping_result.json")
     args = parser.parse_args()
@@ -88,7 +82,6 @@ def main():
         embedding_model=args.embedding_model,
         similarity_threshold=args.regroup_similarity_threshold,
         min_cluster_size=args.regroup_min_cluster_size,
-        unitization_mode=args.regroup_unitization_mode,
         trace_path=args.trace_path,
     )
     groups = regrouper.regroup(window_id, items)
@@ -107,7 +100,6 @@ def main():
         "embedding_model": args.embedding_model,
         "chunk_size": args.chunk_size,
         "recent_token_budget": args.recent_token_budget,
-        "regroup_unitization_mode": args.regroup_unitization_mode,
         "window_id": window_id,
         "selected_chunk_ids": selected_chunks,
         "window_total_tokens": total_tokens,

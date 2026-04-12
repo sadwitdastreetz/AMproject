@@ -592,3 +592,24 @@ profiling 观察：
 - 这一步把“benchmark chunk”与“合成 dialogue turn”拆清楚了
 - 后续如果要做 per-turn agentic unitization，应在 `MemoryTurn.unitization_decision` 上落点
 - flush 阶段后续应消费 `List[MemoryTurn]`，再决定如何展开为 local units
+
+## 31. 关于移除临时 unitization router 的决定
+
+当前新增决策：
+
+1. 暂停继续推进 `unitization_mode` / `AgenticUnitizationRouter` 这一临时路线。
+2. 删除 `AgenticMemory/unitization_router.py`，避免把尚未定型的 agentic routing 抽象继续固化到 runner、trace 和实验参数中。
+3. `MemoryTurn` 不再保存 `unitization_decision`。
+4. 必须保留已经确认有价值的基础设施：
+   - short-term ping-pong buffer
+   - `MemoryTurn`
+   - ingest 时生成并保存官方 `formatted_turn`
+   - recent retrieval 使用 `formatted_turn`
+   - flush 阶段消费 `List[MemoryTurn]`
+5. 当前 `TopicRegrouper` 只作为 legacy CR regrouping 路径保留，不再被表述为通用 memory evolution 机制。
+
+当前判断：
+
+- 真正值得继续沉淀的是 `MemoryTurn -> sliding window over turns -> List[MemoryUnit]`。
+- 未来如果做 agentic decomposition，应输出多个结构化 `MemoryUnit`，而不是让系统先选择一个粗粒度 `unitization_mode`。
+- 这次整理的目的不是提出新方法，而是把代码从 CR 过拟合的临时抽象中退出来。

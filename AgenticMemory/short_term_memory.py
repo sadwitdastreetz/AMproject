@@ -60,7 +60,6 @@ class MemoryTurn:
     timestamp: str
     token_count: int
     ingest_index: int
-    unitization_decision: Optional[Dict[str, Any]] = None
 
 
 class ShortTermMemoryBuffer:
@@ -105,7 +104,6 @@ class ShortTermMemoryBuffer:
         formatted_turn: str,
         source: str,
         timestamp: str,
-        unitization_decision: Optional[Dict[str, Any]] = None,
     ) -> MemoryTurn:
         token_count = self.token_counter.count(raw_context)
         turn = MemoryTurn(
@@ -116,7 +114,6 @@ class ShortTermMemoryBuffer:
             timestamp=timestamp,
             token_count=token_count,
             ingest_index=self.ingest_counter,
-            unitization_decision=unitization_decision,
         )
         self.ingest_counter += 1
         region_id = self.active_region
@@ -146,7 +143,6 @@ class ShortTermMemoryBuffer:
                 "pending_flush_region": self.pending_flush_region,
                 "buffer_size": len(self.turns),
                 "buffer_tokens": self.total_tokens,
-                "unitization_decision": unitization_decision,
                 "content_preview": _preview_text(raw_context),
             },
         )

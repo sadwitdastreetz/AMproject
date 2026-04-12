@@ -1342,3 +1342,48 @@ Stage B FIFO sliding buffer：
   - recent prompt 包含官方合成对话格式
   - regroup trace 写入 `input_turn_ids`
   - `TopicGroup.source_turn_ids` 正确回溯到 `chunk_0000`
+
+## 2026-04-13 - Code cleanup: remove temporary unitization router
+
+类型：
+
+- 结构整理
+- 未新增 benchmark 结果
+
+背景：
+
+- 当前暂停继续优化 CR sentence/topic clustering
+- 用户明确要求剔除之前 `unitization_mode` / agentic router 相关试探代码
+- 需要保留已确认有价值的 `MemoryTurn + ping-pong buffer` 基础结构
+
+代码更新：
+
+- 删除 `AgenticMemory/unitization_router.py`
+- 移除 CR runner 中的 router 初始化、per-window router 调用和相关 CLI 参数
+- 移除 `MemoryTurn.unitization_decision`
+- 移除 group trace 中的 `unitization_decision` / `unitization_mode`
+- 保留：
+  - `ShortTermMemoryBuffer.regions: List[List[MemoryTurn]]`
+  - ingest 时写入 `formatted_turn`
+  - recent prompt 展示官方 synthetic dialogue 格式
+  - topic regrouping 输入为 `List[MemoryTurn]`
+
+当前判断：
+
+- `TopicRegrouper` 暂时只是 legacy CR regrouping 实现
+- 后续更合理的方向是另行设计 `MemoryTurn -> sliding window over turns -> List[MemoryUnit]`，不要继续扩展旧的 `unitization_mode` 参数
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\short_term_memory.py AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
+- 已检查 `memoryagentbench_cr_runner.py --help`，确认不再存在 unitization router 相关 CLI 参数
+- 已检查 `profile_topic_regrouping.py --help`，确认不再存在 `--regroup-unitization-mode`
+- 已运行隔离结构 smoke test：
+  - monkeypatch `_rebuild_retriever()`，避免触发外部 embedding API
+  - `ShortTermMemoryBuffer` 保存 `MemoryTurn`
+  - recent prompt 包含 `Dialogue between User and Assistant`
+  - ping-pong buffer 可正常产生 flush 信号
+
+注意：
+
+- 非 monkeypatch 的 `ShortTermMemoryBuffer.add_turn()` 会重建 recent embedding index，因此仍需要正确配置 `OPENAI_BASE_URL` / embedding API 后才能跑完整在线链路
