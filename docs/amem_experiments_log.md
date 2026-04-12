@@ -1297,3 +1297,48 @@ Stage B FIFO sliding buffer：
   - `--regroup-unitization-mode {auto_agentic,chunk,dialogue_turn,example,fact_sentence,paragraph,sentence}`
   - `--unitization-router-preview-chars`
   - `--allow-unitization-router-fallback`
+
+## 2026-04-12 - Structure update: MemoryTurn short-term buffer
+
+类型：
+
+- 结构重构
+- 未新增 benchmark 结果
+
+背景：
+
+- 当前需要暂停继续推进 agentic regrouping
+- 先把 short-term ping-pong buffer 的基本对象改回 MemoryAgentBench 的 synthetic dialogue turn 语义
+- 目标是避免继续把 `chunk`, `sentence`, `turn`, `unit` 混在一起
+
+代码更新：
+
+- `AgenticMemory/short_term_memory.py`
+  - `RecentMemoryItem` 改为 `MemoryTurn`
+  - buffer 内部 `regions` 改为 `List[List[MemoryTurn]]`
+  - `items` 改为 `turns`
+  - 新增 `add_turn()`
+  - `format_for_prompt()` 改为展示 `formatted_turn`
+  - trace 新增 `turn_id`, `source`, `timestamp`, `buffer_turn_ids`, `flush_turn_ids`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - ingest 时立即生成官方 memorize wrapper，写入 `formatted_turn`
+  - ping-pong buffer 保存的是 `MemoryTurn`
+  - flush / retrieval 命名改为 `turns`
+- `AgenticMemory/unitization_router.py`
+  - router preview 改为读取 `MemoryTurn.formatted_turn`
+- `AgenticMemory/topic_regrouper.py`
+  - regroup 输入改为 `Sequence[MemoryTurn]`
+  - trace 新增 `input_turn_ids`
+  - `TopicGroup` 新增 `source_turn_ids`
+- `AgenticMemory/profile_topic_regrouping.py`
+  - profiling 构造 `MemoryTurn`
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\short_term_memory.py AgenticMemory\unitization_router.py AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
+- 已运行隔离 smoke test：
+  - `ShortTermMemoryBuffer` 保存 `MemoryTurn`
+  - `formatted_turn` 以 `Dialogue between User and Assistant` 开头
+  - recent prompt 包含官方合成对话格式
+  - regroup trace 写入 `input_turn_ids`
+  - `TopicGroup.source_turn_ids` 正确回溯到 `chunk_0000`

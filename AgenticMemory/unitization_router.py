@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
 
-from short_term_memory import RecentMemoryItem
+from short_term_memory import MemoryTurn
 
 
 SUPPORTED_UNITIZATION_MODES = {"fact_sentence", "sentence", "dialogue_turn", "paragraph", "example", "chunk"}
@@ -55,17 +55,17 @@ class AgenticUnitizationRouter:
         self.default_mode = default_mode
         self.fail_on_error = fail_on_error
 
-    def _build_preview(self, items: Sequence[RecentMemoryItem]) -> str:
+    def _build_preview(self, turns: Sequence[MemoryTurn]) -> str:
         chunks = []
-        for item in items:
-            chunks.append(f"[{item.chunk_id}]\n{item.raw_text}")
+        for turn in turns:
+            chunks.append(f"[{turn.turn_id}]\n{turn.formatted_turn}")
         preview = "\n\n".join(chunks)
         if len(preview) > self.preview_chars:
             preview = preview[: self.preview_chars] + "\n...[truncated]"
         return preview
 
-    def decide(self, window_id: str, items: Sequence[RecentMemoryItem], source: str = "") -> UnitizationDecision:
-        preview = self._build_preview(items)
+    def decide(self, window_id: str, turns: Sequence[MemoryTurn], source: str = "") -> UnitizationDecision:
+        preview = self._build_preview(turns)
         prompt = f"""You are routing an incoming memory buffer window to a local unitization strategy before archival memory construction.
 
 Choose exactly one unitization_mode:

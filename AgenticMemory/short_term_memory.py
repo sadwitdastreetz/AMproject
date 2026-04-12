@@ -52,12 +52,15 @@ class TokenCounter:
 
 
 @dataclass
-class RecentMemoryItem:
-    chunk_id: str
-    raw_text: str
-    formatted_text: str
+class MemoryTurn:
+    turn_id: str
+    raw_context: str
+    formatted_turn: str
+    source: str
+    timestamp: str
     token_count: int
     ingest_index: int
+    unitization_decision: Optional[Dict[str, Any]] = None
 
 
 class ShortTermMemoryBuffer:
@@ -72,41 +75,52 @@ class ShortTermMemoryBuffer:
         self.token_counter = TokenCounter()
         self.trace_logger = RecentTraceLogger(trace_path)
         self.embedding_model = embedding_model
-        self.regions: List[List[RecentMemoryItem]] = [[], []]
+        self.regions: List[List[MemoryTurn]] = [[], []]
         self.region_tokens = [0, 0]
         self.region_full = [False, False]
         self.active_region = 0
         self.pending_flush_region: Optional[int] = None
-        self.items: List[RecentMemoryItem] = []
+        self.turns: List[MemoryTurn] = []
         self.total_tokens = 0
         self.window_counter = 0
         self.ingest_counter = 0
         self.retriever = SimpleEmbeddingRetriever(embedding_model)
 
     def _refresh_items(self):
-        self.items = sorted(
+        self.turns = sorted(
             self.regions[0] + self.regions[1],
-            key=lambda item: item.ingest_index,
+            key=lambda turn: turn.ingest_index,
         )
         self.total_tokens = sum(self.region_tokens)
 
     def _rebuild_retriever(self):
         self.retriever = SimpleEmbeddingRetriever(self.embedding_model)
-        if self.items:
-            self.retriever.add_documents([item.raw_text for item in self.items])
+        if self.turns:
+            self.retriever.add_documents([turn.raw_context for turn in self.turns])
 
-    def add_item(self, chunk_id: str, raw_text: str, formatted_text: str) -> RecentMemoryItem:
-        token_count = self.token_counter.count(raw_text)
-        item = RecentMemoryItem(
-            chunk_id=chunk_id,
-            raw_text=raw_text,
-            formatted_text=formatted_text,
+    def add_turn(
+        self,
+        turn_id: str,
+        raw_context: str,
+        formatted_turn: str,
+        source: str,
+        timestamp: str,
+        unitization_decision: Optional[Dict[str, Any]] = None,
+    ) -> MemoryTurn:
+        token_count = self.token_counter.count(raw_context)
+        turn = MemoryTurn(
+            turn_id=turn_id,
+            raw_context=raw_context,
+            formatted_turn=formatted_turn,
+            source=source,
+            timestamp=timestamp,
             token_count=token_count,
             ingest_index=self.ingest_counter,
+            unitization_decision=unitization_decision,
         )
         self.ingest_counter += 1
         region_id = self.active_region
-        self.regions[region_id].append(item)
+        self.regions[region_id].append(turn)
         self.region_tokens[region_id] += token_count
         if self.region_tokens[region_id] >= self.region_size:
             self.region_full[region_id] = True
@@ -120,7 +134,9 @@ class ShortTermMemoryBuffer:
         self.trace_logger.log(
             "recent_item_added",
             {
-                "chunk_id": chunk_id,
+                "turn_id": turn_id,
+                "source": source,
+                "timestamp": timestamp,
                 "token_count": token_count,
                 "region_id": region_id,
                 "active_region": self.active_region,
@@ -128,39 +144,44 @@ class ShortTermMemoryBuffer:
                 "region_tokens": list(self.region_tokens),
                 "region_full": list(self.region_full),
                 "pending_flush_region": self.pending_flush_region,
-                "buffer_size": len(self.items),
+                "buffer_size": len(self.turns),
                 "buffer_tokens": self.total_tokens,
-                "content_preview": _preview_text(raw_text),
+                "unitization_decision": unitization_decision,
+                "content_preview": _preview_text(raw_context),
             },
         )
-        return item
+        return turn
 
     def should_flush(self) -> bool:
         return self.pending_flush_region is not None
 
-    def snapshot_items(self) -> List[RecentMemoryItem]:
-        return list(self.items)
+    def snapshot_turns(self) -> List[MemoryTurn]:
+        return list(self.turns)
 
-    def flush_window(self) -> tuple[str, List[RecentMemoryItem]]:
+    def flush_window(self) -> tuple[str, List[MemoryTurn]]:
         window_id = f"window_{self.window_counter:04d}"
-        buffer_items = self.snapshot_items()
+        buffer_turns = self.snapshot_turns()
         if self.pending_flush_region is None:
             return window_id, []
         flush_region = self.pending_flush_region
-        flush_items = list(self.regions[flush_region])
+        flush_turns = list(self.regions[flush_region])
         self.trace_logger.log(
             "recent_flush_started",
             {
                 "window_id": window_id,
                 "flush_region": flush_region,
-                "buffer_item_count": len(buffer_items),
-                "flush_item_count": len(flush_items),
+                "buffer_turn_count": len(buffer_turns),
+                "flush_turn_count": len(flush_turns),
+                "buffer_item_count": len(buffer_turns),
+                "flush_item_count": len(flush_turns),
                 "buffer_tokens": self.total_tokens,
                 "region_size": self.region_size,
                 "region_tokens": list(self.region_tokens),
                 "region_full": list(self.region_full),
-                "buffer_chunk_ids": [item.chunk_id for item in buffer_items],
-                "flush_chunk_ids": [item.chunk_id for item in flush_items],
+                "buffer_turn_ids": [turn.turn_id for turn in buffer_turns],
+                "flush_turn_ids": [turn.turn_id for turn in flush_turns],
+                "buffer_chunk_ids": [turn.turn_id for turn in buffer_turns],
+                "flush_chunk_ids": [turn.turn_id for turn in flush_turns],
             },
         )
         self.regions[flush_region] = []
@@ -177,27 +198,28 @@ class ShortTermMemoryBuffer:
                 "window_id": window_id,
                 "cleared_region": flush_region,
                 "active_region": self.active_region,
-                "retained_chunk_ids": [item.chunk_id for item in self.items],
+                "retained_turn_ids": [turn.turn_id for turn in self.turns],
+                "retained_chunk_ids": [turn.turn_id for turn in self.turns],
                 "region_tokens_after_clear": list(self.region_tokens),
                 "region_full_after_clear": list(self.region_full),
                 "buffer_tokens_after_clear": self.total_tokens,
-                "buffer_size_after_clear": len(self.items),
+                "buffer_size_after_clear": len(self.turns),
             },
         )
-        return window_id, flush_items
+        return window_id, flush_turns
 
-    def retrieve(self, query: str, k: int = 5) -> List[RecentMemoryItem]:
-        if not self.items:
+    def retrieve(self, query: str, k: int = 5) -> List[MemoryTurn]:
+        if not self.turns:
             return []
-        indices = self.retriever.search(query, k=min(k, len(self.items)))
-        return [self.items[idx] for idx in indices]
+        indices = self.retriever.search(query, k=min(k, len(self.turns)))
+        return [self.turns[idx] for idx in indices]
 
-    def format_for_prompt(self, items: List[RecentMemoryItem]) -> str:
-        if not items:
+    def format_for_prompt(self, turns: List[MemoryTurn]) -> str:
+        if not turns:
             return "No recent memory available."
         lines = []
-        for item in items:
+        for turn in turns:
             lines.append(
-                f"recent chunk id:{item.chunk_id}\nrecent content:\n{item.raw_text}"
+                f"recent turn id:{turn.turn_id}\nrecent content:\n{turn.formatted_turn}"
             )
         return "\n\n".join(lines)

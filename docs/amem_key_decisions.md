@@ -568,3 +568,27 @@ profiling 观察：
 - 这是更符合 agentic memory evolution 的方向
 - 代价是每个 flush window 增加一次 LLM 调用
 - 后续实验报告必须记录 router decision，否则不能解释 regrouping 的输入单位选择
+
+## 30. 关于 MemoryTurn buffer 的结构修正
+
+当前新增决策：
+
+1. ping-pong short-term buffer 的基本对象不再是 `RecentMemoryItem`。
+2. buffer 内部改为保存 `MemoryTurn`：
+   - `turn_id`
+   - `raw_context`
+   - `formatted_turn`
+   - `source`
+   - `timestamp`
+   - `token_count`
+   - `ingest_index`
+   - `unitization_decision`
+3. `formatted_turn` 在 ingest 时立即生成，保持 MemoryAgentBench 的 synthetic dialogue protocol。
+4. recent prompt 默认展示 `formatted_turn`，而不是裸 `raw_context`。
+5. 本次只做结构重构，不继续改变 flush 后的 regrouping 策略。
+
+当前判断：
+
+- 这一步把“benchmark chunk”与“合成 dialogue turn”拆清楚了
+- 后续如果要做 per-turn agentic unitization，应在 `MemoryTurn.unitization_decision` 上落点
+- flush 阶段后续应消费 `List[MemoryTurn]`，再决定如何展开为 local units

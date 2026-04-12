@@ -49,6 +49,39 @@
 - mock LLM smoke test 通过
 - OpenRouter `gpt-5.4-mini` router API smoke test 通过，CR preview 被判定为 `fact_sentence`
 
+## 2026-04-12 - MemoryTurn short-term buffer structure
+
+更新范围：
+
+- `AgenticMemory/short_term_memory.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+- `AgenticMemory/unitization_router.py`
+- `AgenticMemory/topic_regrouper.py`
+- `AgenticMemory/profile_topic_regrouping.py`
+
+主要变更：
+
+- `RecentMemoryItem` 改为 `MemoryTurn`
+- `ShortTermMemoryBuffer.regions` 现在保存 `List[List[MemoryTurn]]`
+- `MemoryTurn` 字段固定为：
+  - `turn_id`
+  - `raw_context`
+  - `formatted_turn`
+  - `source`
+  - `timestamp`
+  - `token_count`
+  - `ingest_index`
+  - `unitization_decision`
+- ingest 时立即生成官方 memorize wrapper，保存到 `formatted_turn`
+- recent prompt 改为展示 `formatted_turn`
+- regroup/router 输入类型改为 `MemoryTurn`
+- trace 增加 turn-level 标识，保留部分 chunk 字段用于兼容旧分析
+
+验证：
+
+- `py_compile` 通过
+- 隔离 smoke test 通过：buffer 保存 `MemoryTurn`，recent prompt 可见官方合成对话格式，group trace 可回溯 `input_turn_ids`
+
 ## 1. embedding 改造
 
 目标：

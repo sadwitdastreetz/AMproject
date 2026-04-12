@@ -11,7 +11,7 @@ from nltk.tokenize import sent_tokenize
 from sklearn.metrics.pairwise import cosine_similarity
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
-from short_term_memory import RecentMemoryItem
+from short_term_memory import MemoryTurn
 from unitization_router import SUPPORTED_UNITIZATION_MODES
 
 
@@ -42,7 +42,7 @@ class GroupTraceLogger:
 
 @dataclass
 class RegroupUnit:
-    chunk_id: str
+    turn_id: str
     local_idx: int
     global_idx: int
     text: str
@@ -52,6 +52,7 @@ class RegroupUnit:
 @dataclass
 class TopicGroup:
     topic_id: str
+    source_turn_ids: List[str]
     source_chunk_ids: List[str]
     unit_indices: List[int]
     text: str
@@ -167,31 +168,31 @@ class TopicRegrouper:
         stripped = text.strip()
         return [stripped] if stripped else []
 
-    def _item_to_unit_texts(self, item: RecentMemoryItem, unitization_mode: str) -> tuple[str, List[str]]:
+    def _turn_to_unit_texts(self, turn: MemoryTurn, unitization_mode: str) -> tuple[str, List[str]]:
         if unitization_mode in {"fact_sentence", "sentence"}:
-            return "fact_sentence", self._normalize_sentence_units(item.raw_text)
+            return "fact_sentence", self._normalize_sentence_units(turn.raw_context)
         if unitization_mode == "dialogue_turn":
-            return "dialogue_turn", self._dialogue_turn_units(item.raw_text)
+            return "dialogue_turn", self._dialogue_turn_units(turn.raw_context)
         if unitization_mode == "paragraph":
-            return "paragraph", self._paragraph_units(item.raw_text)
+            return "paragraph", self._paragraph_units(turn.raw_context)
         if unitization_mode == "example":
-            return "example", self._example_units(item.raw_text)
+            return "example", self._example_units(turn.raw_context)
         if unitization_mode == "chunk":
-            return "chunk", self._chunk_units(item.raw_text)
+            return "chunk", self._chunk_units(turn.raw_context)
         raise ValueError(
             f"Unknown unitization_mode '{unitization_mode}'. "
             f"Supported modes: {sorted(SUPPORTED_UNITIZATION_MODES)}."
         )
 
-    def _to_units(self, items: Sequence[RecentMemoryItem], unitization_mode: str) -> List[RegroupUnit]:
+    def _to_units(self, turns: Sequence[MemoryTurn], unitization_mode: str) -> List[RegroupUnit]:
         units: List[RegroupUnit] = []
         global_idx = 0
-        for item in items:
-            unit_type, unit_texts = self._item_to_unit_texts(item, unitization_mode)
+        for turn in turns:
+            unit_type, unit_texts = self._turn_to_unit_texts(turn, unitization_mode)
             for local_idx, unit_text in enumerate(unit_texts):
                 units.append(
                     RegroupUnit(
-                        chunk_id=item.chunk_id,
+                        turn_id=turn.turn_id,
                         local_idx=local_idx,
                         global_idx=global_idx,
                         text=unit_text,
@@ -417,7 +418,7 @@ class TopicRegrouper:
     def regroup(
         self,
         window_id: str,
-        items: Sequence[RecentMemoryItem],
+        turns: Sequence[MemoryTurn],
         unitization_mode: Optional[str] = None,
         unitization_decision: Optional[Dict[str, Any]] = None,
     ) -> List[TopicGroup]:
@@ -426,7 +427,7 @@ class TopicRegrouper:
             raise ValueError(f"Unsupported unitization_mode '{active_unitization_mode}'.")
         total_start_time = time.perf_counter()
         unit_start_time = time.perf_counter()
-        units = self._to_units(items, active_unitization_mode)
+        units = self._to_units(turns, active_unitization_mode)
         unitization_seconds = time.perf_counter() - unit_start_time
         if not units:
             return []
@@ -437,17 +438,18 @@ class TopicRegrouper:
         cluster_payload = []
         for idx, cluster in enumerate(clusters):
             cluster = sorted(cluster, key=lambda unit: unit.global_idx)
-            source_chunk_ids = []
-            seen_chunk_ids = set()
+            source_turn_ids = []
+            seen_turn_ids = set()
             for unit in cluster:
-                if unit.chunk_id not in seen_chunk_ids:
-                    seen_chunk_ids.add(unit.chunk_id)
-                    source_chunk_ids.append(unit.chunk_id)
+                if unit.turn_id not in seen_turn_ids:
+                    seen_turn_ids.add(unit.turn_id)
+                    source_turn_ids.append(unit.turn_id)
             text = " ".join(unit.text for unit in cluster)
             groups.append(
                 TopicGroup(
                     topic_id=f"{window_id}_topic_{idx:02d}",
-                    source_chunk_ids=source_chunk_ids,
+                    source_turn_ids=source_turn_ids,
+                    source_chunk_ids=source_turn_ids,
                     unit_indices=[unit.global_idx for unit in cluster],
                     text=text,
                 )
@@ -455,7 +457,8 @@ class TopicRegrouper:
             cluster_payload.append(
                 {
                     "topic_id": f"{window_id}_topic_{idx:02d}",
-                    "source_chunk_ids": source_chunk_ids,
+                    "source_turn_ids": source_turn_ids,
+                    "source_chunk_ids": source_turn_ids,
                     "unit_indices": [unit.global_idx for unit in cluster],
                     "sentence_indices": [unit.global_idx for unit in cluster],
                     "unit_count": len(cluster),
@@ -475,8 +478,10 @@ class TopicRegrouper:
             "topic_regrouping_complete",
             {
                 "window_id": window_id,
-                "input_chunk_ids": [item.chunk_id for item in items],
-                "input_chunk_count": len(items),
+                "input_turn_ids": [turn.turn_id for turn in turns],
+                "input_turn_count": len(turns),
+                "input_chunk_ids": [turn.turn_id for turn in turns],
+                "input_chunk_count": len(turns),
                 "unitization_mode": active_unitization_mode,
                 "unitization_decision": unitization_decision,
                 "unit_count": len(units),

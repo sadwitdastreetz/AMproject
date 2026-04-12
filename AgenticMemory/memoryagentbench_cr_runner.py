@@ -109,17 +109,19 @@ class AMemConflictResolutionAgent:
             self.archived_chunk_ids.append(group.topic_id)
 
     def _flush_recent_window(self):
-        window_id, items = self.recent_memory.flush_window()
-        if not items:
+        window_id, turns = self.recent_memory.flush_window()
+        if not turns:
             return
         flush_record = {
             "window_id": window_id,
-            "source_chunk_ids": [item.chunk_id for item in items],
-            "flushed_tokens": sum(item.token_count for item in items),
+            "source_turn_ids": [turn.turn_id for turn in turns],
+            "source_chunk_ids": [turn.turn_id for turn in turns],
+            "flushed_tokens": sum(turn.token_count for turn in turns),
             "region_size": self.recent_memory.region_size,
             "active_region_after_flush": self.recent_memory.active_region,
             "region_tokens_after_flush": list(self.recent_memory.region_tokens),
-            "retained_buffer_chunk_ids": [item.chunk_id for item in self.recent_memory.items],
+            "retained_buffer_turn_ids": [turn.turn_id for turn in self.recent_memory.turns],
+            "retained_buffer_chunk_ids": [turn.turn_id for turn in self.recent_memory.turns],
             "retained_buffer_tokens": self.recent_memory.total_tokens,
             "mode": "topic_regrouping" if self.enable_topic_regrouping else "raw_chunk_archive",
             "topic_ids": [],
@@ -130,14 +132,14 @@ class AMemConflictResolutionAgent:
             if self.regroup_unitization_mode == "auto_agentic":
                 decision = self.unitization_router.decide(
                     window_id=window_id,
-                    items=items,
+                    turns=turns,
                     source=self.source_name,
                 )
                 unitization_decision = decision.to_dict()
                 active_unitization_mode = decision.mode
             groups = self.topic_regrouper.regroup(
                 window_id,
-                items,
+                turns,
                 unitization_mode=active_unitization_mode,
                 unitization_decision=unitization_decision,
             )
@@ -147,11 +149,11 @@ class AMemConflictResolutionAgent:
                 self._archive_topic_groups(window_id, groups)
                 flush_record["topic_ids"] = [group.topic_id for group in groups]
             else:
-                for item in items:
-                    self._archive_raw_chunk(item.chunk_id, item.raw_text)
+                for turn in turns:
+                    self._archive_raw_chunk(turn.turn_id, turn.raw_context)
         else:
-            for item in items:
-                self._archive_raw_chunk(item.chunk_id, item.raw_text)
+            for turn in turns:
+                self._archive_raw_chunk(turn.turn_id, turn.raw_context)
         self.flush_history.append(flush_record)
 
     def ingest_chunks(self, context: str, chunk_size: int):
@@ -159,10 +161,12 @@ class AMemConflictResolutionAgent:
         for chunk_idx, chunk in enumerate(chunks):
             chunk_id = f"chunk_{chunk_idx:04d}"
             formatted_chunk = self._format_chunk(chunk, chunk_id)
-            self.recent_memory.add_item(
-                chunk_id=chunk_id,
-                raw_text=chunk,
-                formatted_text=formatted_chunk,
+            self.recent_memory.add_turn(
+                turn_id=chunk_id,
+                raw_context=chunk,
+                formatted_turn=formatted_chunk,
+                source=self.source_name or "Conflict_Resolution",
+                timestamp=chunk_id,
             )
             if self.recent_memory.should_flush():
                 self._flush_recent_window()
@@ -179,8 +183,8 @@ Keywords:"""
 
     def answer(self, question: str):
         query_terms = self.generate_query_terms(question)
-        recent_items = self.recent_memory.retrieve(query_terms, k=self.recent_k)
-        recent_context = self.recent_memory.format_for_prompt(recent_items)
+        recent_turns = self.recent_memory.retrieve(query_terms, k=self.recent_k)
+        recent_context = self.recent_memory.format_for_prompt(recent_turns)
         raw_context, _ = self.memory_system.find_related_memories(query_terms, k=self.retrieve_k)
         user_prompt = self.query_template.format(question=question)
         priority_instruction = (
@@ -327,7 +331,7 @@ def main():
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,
         "flush_history": agent.flush_history,
-        "recent_buffer_size": len(agent.recent_memory.items),
+        "recent_buffer_size": len(agent.recent_memory.turns),
         "recent_buffer_tokens": agent.recent_memory.total_tokens,
         "max_questions": args.max_questions,
         "summary": summary,

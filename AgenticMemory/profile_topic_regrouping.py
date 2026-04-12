@@ -7,7 +7,7 @@ from pathlib import Path
 from datasets import load_dataset
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL
-from short_term_memory import RecentMemoryItem, TokenCounter
+from short_term_memory import MemoryTurn, TokenCounter
 from topic_regrouper import TopicRegrouper
 from unitization_router import SUPPORTED_UNITIZATION_MODES
 
@@ -68,10 +68,12 @@ def main():
         formatted_chunk = memorize_template.format(context=chunk, time_stamp=chunk_id)
         token_count = token_counter.count(chunk)
         items.append(
-            RecentMemoryItem(
-                chunk_id=chunk_id,
-                raw_text=chunk,
-                formatted_text=formatted_chunk,
+            MemoryTurn(
+                turn_id=chunk_id,
+                raw_context=chunk,
+                formatted_turn=formatted_chunk,
+                source=args.source,
+                timestamp=chunk_id,
                 token_count=token_count,
                 ingest_index=chunk_idx,
             )
