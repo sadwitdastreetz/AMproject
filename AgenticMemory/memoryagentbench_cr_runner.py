@@ -41,6 +41,7 @@ class AMemConflictResolutionAgent:
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
         regroup_min_cluster_size: int = 2,
+        regroup_unitization_mode: str = "fact_sentence",
     ):
         self.memory_system = RobustAgenticMemorySystem(
             model_name=embedding_model,
@@ -68,8 +69,10 @@ class AMemConflictResolutionAgent:
             embedding_model=embedding_model,
             similarity_threshold=regroup_similarity_threshold,
             min_cluster_size=regroup_min_cluster_size,
+            unitization_mode=regroup_unitization_mode,
             trace_path=group_trace_path,
         )
+        self.regroup_unitization_mode = regroup_unitization_mode
         self.embedding_model = embedding_model
         self.archived_chunk_ids: list[str] = []
         self.flush_history: list[dict] = []
@@ -205,6 +208,16 @@ def main():
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
     parser.add_argument("--regroup-min-cluster-size", type=int, default=2)
+    parser.add_argument(
+        "--regroup-unitization-mode",
+        default="fact_sentence",
+        choices=["fact_sentence", "sentence", "paragraph", "chunk"],
+        help=(
+            "Local unit type used before topic regrouping. "
+            "For CR/FactConsolidation the intended setting is fact_sentence; "
+            "non-CR runners should pass paragraph/chunk or implement dialogue-turn unitization."
+        ),
+    )
     args = parser.parse_args()
 
     row = load_conflict_resolution_row(args.source)
@@ -221,6 +234,7 @@ def main():
         enable_topic_regrouping=args.enable_topic_regrouping,
         regroup_similarity_threshold=args.regroup_similarity_threshold,
         regroup_min_cluster_size=args.regroup_min_cluster_size,
+        regroup_unitization_mode=args.regroup_unitization_mode,
     )
     chunks = agent.ingest_chunks(row["context"], chunk_size=args.chunk_size)
 
@@ -269,6 +283,7 @@ def main():
         "recent_token_budget": args.recent_token_budget,
         "recent_region_size": agent.recent_memory.region_size,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
+        "regroup_unitization_mode": args.regroup_unitization_mode,
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,

@@ -1,5 +1,29 @@
 # A-Mem Code Changes
 
+## 2026-04-12 - Format-aware regrouping unitization
+
+更新范围：
+
+- `AgenticMemory/topic_regrouper.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+- `AgenticMemory/profile_topic_regrouping.py`
+
+主要变更：
+
+- 将 regrouping 内部局部单位从 `SentenceUnit` 改为更中性的 `RegroupUnit`
+- 新增 `unitization_mode`
+- 当前支持 `fact_sentence`, `sentence`, `paragraph`, `chunk`
+- CR runner 新增 `--regroup-unitization-mode`，默认 `fact_sentence`
+- profiling 脚本同步新增同名参数
+- trace / result 中新增 `unitization_mode`, `unit_count`, `unit_indices`
+- 为兼容已有分析脚本，暂时保留 `sentence_count` / `sentence_indices`
+
+设计含义：
+
+- CR / FactConsolidation 可以继续使用 `fact_sentence`
+- 非 CR 数据后续应按数据形态选择 turn / paragraph / discourse block / example 等局部单位
+- 方法表述从 sentence-level topic clustering 调整为 format-aware unitization + buffer-level regrouping
+
 ## 1. embedding 改造
 
 目标：

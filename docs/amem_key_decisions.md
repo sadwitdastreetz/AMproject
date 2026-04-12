@@ -512,3 +512,28 @@ profiling 观察：
 - adaptive partition selection 是比 KMeans 更有方法论解释力的方向
 - 但当前只是 structural baseline，不等于 QA 性能已验证
 - 下一步应该在 `ping-pong buffer 8192 / region 4096` 条件下跑前 50 问，对比 KMeans 版本的 `exact_match = 0.5800`, `f1 = 0.6133`
+
+## 28. 关于 unitization_mode 的修正
+
+当前新增决策：
+
+1. 不再把 `sentence-level` 作为通用中间层假设。
+2. MemoryAgentBench 的 `multi-turn` 指的是外层实验协议：
+   - 每个 benchmark chunk 会被官方 memorize prompt 包装成一轮 user-assistant 交互
+   - 但 `{context}` 内部的数据形态并不统一
+3. 对 CR / FactConsolidation：
+   - `{context}` 是编号 facts chunk
+   - 当前可以继续使用 `fact_sentence` 作为局部 unitization 参数
+   - 这应被视为该数据集形态下的实验参数，而不是通用 memory evolution 机制
+4. 对非 CR 数据：
+   - 后续不应默认使用 CR 的 sentence/fact-sentence 策略
+   - 对话类数据应使用 turn/message 单位
+   - 长文、小说、document haystack 应使用 paragraph / discourse block / chunk 单位
+   - ICL 类数据应使用 example 单位
+5. 当前代码先暴露 `--regroup-unitization-mode`，默认仍为 `fact_sentence`，用于保持已跑 CR 实验可复现。
+
+当前判断：
+
+- 这个修正暂时解决了“CR 上 sentence-level 可能过拟合”的方法论问题
+- 论文/报告中应写成 format-aware unitization，而不是 sentence-level topic clustering
+- Stage B topic regrouping 仍未收口，后续需要在非 CR 数据或更自然的 dialogue/document 形态上重新验证

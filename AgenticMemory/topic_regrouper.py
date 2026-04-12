@@ -40,24 +40,25 @@ class GroupTraceLogger:
 
 
 @dataclass
-class SentenceUnit:
+class RegroupUnit:
     chunk_id: str
-    sentence_idx: int
+    local_idx: int
     global_idx: int
     text: str
+    unit_type: str
 
 
 @dataclass
 class TopicGroup:
     topic_id: str
     source_chunk_ids: List[str]
-    sentence_indices: List[int]
+    unit_indices: List[int]
     text: str
 
 
 @dataclass
 class ClusteringResult:
-    clusters: List[List[SentenceUnit]]
+    clusters: List[List[RegroupUnit]]
     timings: Dict[str, float]
     selected_candidate: Dict[str, Any]
     candidate_scores: List[Dict[str, Any]]
@@ -79,6 +80,7 @@ class TopicRegrouper:
         similarity_threshold: float = 0.42,
         min_cluster_size: int = 2,
         reciprocal_top_k: int = 5,
+        unitization_mode: str = "fact_sentence",
         trace_path: Optional[str] = None,
     ):
         self.embedding_model = embedding_model
@@ -86,6 +88,7 @@ class TopicRegrouper:
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
         self.reciprocal_top_k = reciprocal_top_k
+        self.unitization_mode = unitization_mode
         self.partition_candidates = [
             (None, reciprocal_top_k),
             (0.0, 5),
@@ -97,7 +100,7 @@ class TopicRegrouper:
         ]
         self.trace_logger = GroupTraceLogger(trace_path)
 
-    def _normalize_sentences(self, text: str) -> List[str]:
+    def _normalize_sentence_units(self, text: str) -> List[str]:
         raw_sentences = [s.strip() for s in sent_tokenize(text) if s.strip()]
         if not raw_sentences:
             return [text.strip()]
@@ -122,24 +125,45 @@ class TopicRegrouper:
                 merged.append(pending_prefix)
         return merged or [text.strip()]
 
-    def _to_sentence_units(self, items: Sequence[RecentMemoryItem]) -> List[SentenceUnit]:
-        units: List[SentenceUnit] = []
+    def _paragraph_units(self, text: str) -> List[str]:
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+        return paragraphs or [text.strip()]
+
+    def _chunk_units(self, text: str) -> List[str]:
+        stripped = text.strip()
+        return [stripped] if stripped else []
+
+    def _item_to_unit_texts(self, item: RecentMemoryItem) -> tuple[str, List[str]]:
+        if self.unitization_mode in {"fact_sentence", "sentence"}:
+            return "fact_sentence", self._normalize_sentence_units(item.raw_text)
+        if self.unitization_mode == "paragraph":
+            return "paragraph", self._paragraph_units(item.raw_text)
+        if self.unitization_mode == "chunk":
+            return "chunk", self._chunk_units(item.raw_text)
+        raise ValueError(
+            f"Unknown unitization_mode '{self.unitization_mode}'. "
+            "Supported modes: fact_sentence, sentence, paragraph, chunk."
+        )
+
+    def _to_units(self, items: Sequence[RecentMemoryItem]) -> List[RegroupUnit]:
+        units: List[RegroupUnit] = []
         global_idx = 0
         for item in items:
-            sentences = self._normalize_sentences(item.raw_text)
-            for sentence_idx, sentence in enumerate(sentences):
+            unit_type, unit_texts = self._item_to_unit_texts(item)
+            for local_idx, unit_text in enumerate(unit_texts):
                 units.append(
-                    SentenceUnit(
+                    RegroupUnit(
                         chunk_id=item.chunk_id,
-                        sentence_idx=sentence_idx,
+                        local_idx=local_idx,
                         global_idx=global_idx,
-                        text=sentence,
+                        text=unit_text,
+                        unit_type=unit_type,
                     )
                 )
                 global_idx += 1
         return units
 
-    def _connected_components(self, adjacency: Dict[int, set[int]], units: List[SentenceUnit]) -> List[List[int]]:
+    def _connected_components(self, adjacency: Dict[int, set[int]], units: List[RegroupUnit]) -> List[List[int]]:
         visited = set()
         clusters: List[List[int]] = []
         for idx in range(len(units)):
@@ -160,7 +184,7 @@ class TopicRegrouper:
     def _build_candidate_partition(
         self,
         sim: np.ndarray,
-        units: List[SentenceUnit],
+        units: List[RegroupUnit],
         base_neighbor_lists: List[List[int]],
         alpha: Optional[float],
         top_m: int,
@@ -274,7 +298,7 @@ class TopicRegrouper:
         self,
         sim: np.ndarray,
         embeddings: np.ndarray,
-        units: List[SentenceUnit],
+        units: List[RegroupUnit],
     ) -> tuple[List[List[int]], Dict[str, Any], List[Dict[str, Any]]]:
         base_neighbor_lists: List[List[int]] = []
         for i in range(len(units)):
@@ -321,7 +345,7 @@ class TopicRegrouper:
         }
         return selected.clusters, selected_payload, candidate_scores
 
-    def _cluster_units(self, units: List[SentenceUnit]) -> ClusteringResult:
+    def _cluster_units(self, units: List[RegroupUnit]) -> ClusteringResult:
         timings = {
             "embedding_seconds": 0.0,
             "similarity_seconds": 0.0,
@@ -354,9 +378,9 @@ class TopicRegrouper:
 
     def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
         total_start_time = time.perf_counter()
-        sentence_start_time = time.perf_counter()
-        units = self._to_sentence_units(items)
-        sentence_seconds = time.perf_counter() - sentence_start_time
+        unit_start_time = time.perf_counter()
+        units = self._to_units(items)
+        unitization_seconds = time.perf_counter() - unit_start_time
         if not units:
             return []
 
@@ -377,7 +401,7 @@ class TopicRegrouper:
                 TopicGroup(
                     topic_id=f"{window_id}_topic_{idx:02d}",
                     source_chunk_ids=source_chunk_ids,
-                    sentence_indices=[unit.global_idx for unit in cluster],
+                    unit_indices=[unit.global_idx for unit in cluster],
                     text=text,
                 )
             )
@@ -385,14 +409,18 @@ class TopicRegrouper:
                 {
                     "topic_id": f"{window_id}_topic_{idx:02d}",
                     "source_chunk_ids": source_chunk_ids,
+                    "unit_indices": [unit.global_idx for unit in cluster],
                     "sentence_indices": [unit.global_idx for unit in cluster],
+                    "unit_count": len(cluster),
                     "sentence_count": len(cluster),
+                    "unit_type": cluster[0].unit_type if cluster else self.unitization_mode,
                     "content_preview": _preview_text(text),
                 }
             )
 
         timing_seconds = {
-            "sentence_split_seconds": sentence_seconds,
+            "unitization_seconds": unitization_seconds,
+            "sentence_split_seconds": unitization_seconds,
             **clustering_result.timings,
         }
         timing_seconds["total_seconds"] = time.perf_counter() - total_start_time
@@ -402,6 +430,8 @@ class TopicRegrouper:
                 "window_id": window_id,
                 "input_chunk_ids": [item.chunk_id for item in items],
                 "input_chunk_count": len(items),
+                "unitization_mode": self.unitization_mode,
+                "unit_count": len(units),
                 "sentence_count": len(units),
                 "cluster_count": len(groups),
                 "clustering_strategy": "edge_pruning_connected_components",

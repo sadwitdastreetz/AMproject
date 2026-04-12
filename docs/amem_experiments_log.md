@@ -1202,3 +1202,45 @@ Stage B FIFO sliding buffer：
 - 相比 naive edge pruning，partition selection 多花约 `0.33s`，主要成本仍是 embedding
 - 当前风险是 groups 数量偏多，可能带来 archival note 碎片化
 - 下一步需要跑 `8192/4096` 小基准确认 QA 指标，不应只看结构指标
+
+## 2026-04-12 - Method update: format-aware unitization
+
+类型：
+
+- 方法论与代码接口更新
+- 未新增 benchmark 结果
+
+背景：
+
+- MemoryAgentBench 将输入统一包装成 multi-turn memorization protocol
+- 但不同 split 的 `{context}` 内部形态并不统一：
+  - CR / FactConsolidation 是编号 facts chunk
+  - ReDial / LongMemEval 更接近 dialogue turns
+  - EventQA / InfBench / DetectiveQA 更接近 book / narrative / document
+  - ICL 更接近 example list
+
+代码更新：
+
+- `AgenticMemory/topic_regrouper.py`
+  - 将内部局部单位从 `SentenceUnit` 调整为更中性的 `RegroupUnit`
+  - 新增 `unitization_mode`
+  - 当前支持：`fact_sentence`, `sentence`, `paragraph`, `chunk`
+  - trace 中新增 `unitization_mode`, `unit_count`, `unit_indices`
+  - 为兼容旧 trace 分析，暂时保留 `sentence_count` / `sentence_indices` 字段
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - 新增 CLI 参数 `--regroup-unitization-mode`
+  - 默认值为 `fact_sentence`
+  - result JSON 中记录 `regroup_unitization_mode`
+- `AgenticMemory/profile_topic_regrouping.py`
+  - 新增同名 profiling 参数
+  - 输出 `group_unit_counts`
+
+当前决策：
+
+- CR 上可以继续使用 `fact_sentence`，但这只是数据形态参数
+- 后续非 CR runner 不应默认复用 CR 的 sentence-level unitization
+- 后续方法表述应改成 format-aware unitization + buffer-level regrouping / segmentation
+
+验证：
+
+- 已运行 `python -m py_compile AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
