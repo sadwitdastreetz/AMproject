@@ -11,6 +11,7 @@ from memory_layer_robust import RobustAgenticMemorySystem, RobustLLMController
 from short_term_memory import ShortTermMemoryBuffer
 from test_advanced_robust import parse_plain_text_answer
 from topic_regrouper import TopicRegrouper
+from unitization_router import AgenticUnitizationRouter, SUPPORTED_UNITIZATION_MODES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +42,9 @@ class AMemConflictResolutionAgent:
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
         regroup_min_cluster_size: int = 2,
-        regroup_unitization_mode: str = "fact_sentence",
+        regroup_unitization_mode: str = "auto_agentic",
+        unitization_router_preview_chars: int = 4000,
+        unitization_router_fail_on_error: bool = True,
     ):
         self.memory_system = RobustAgenticMemorySystem(
             model_name=embedding_model,
@@ -69,11 +72,22 @@ class AMemConflictResolutionAgent:
             embedding_model=embedding_model,
             similarity_threshold=regroup_similarity_threshold,
             min_cluster_size=regroup_min_cluster_size,
-            unitization_mode=regroup_unitization_mode,
+            unitization_mode=(
+                "fact_sentence"
+                if regroup_unitization_mode == "auto_agentic"
+                else regroup_unitization_mode
+            ),
             trace_path=group_trace_path,
         )
         self.regroup_unitization_mode = regroup_unitization_mode
+        self.unitization_router = AgenticUnitizationRouter(
+            llm_controller=self.retriever_llm,
+            preview_chars=unitization_router_preview_chars,
+            default_mode="chunk",
+            fail_on_error=unitization_router_fail_on_error,
+        )
         self.embedding_model = embedding_model
+        self.source_name = ""
         self.archived_chunk_ids: list[str] = []
         self.flush_history: list[dict] = []
 
@@ -111,7 +125,24 @@ class AMemConflictResolutionAgent:
             "topic_ids": [],
         }
         if self.enable_topic_regrouping:
-            groups = self.topic_regrouper.regroup(window_id, items)
+            unitization_decision = None
+            active_unitization_mode = self.regroup_unitization_mode
+            if self.regroup_unitization_mode == "auto_agentic":
+                decision = self.unitization_router.decide(
+                    window_id=window_id,
+                    items=items,
+                    source=self.source_name,
+                )
+                unitization_decision = decision.to_dict()
+                active_unitization_mode = decision.mode
+            groups = self.topic_regrouper.regroup(
+                window_id,
+                items,
+                unitization_mode=active_unitization_mode,
+                unitization_decision=unitization_decision,
+            )
+            flush_record["unitization_mode"] = active_unitization_mode
+            flush_record["unitization_decision"] = unitization_decision
             if groups:
                 self._archive_topic_groups(window_id, groups)
                 flush_record["topic_ids"] = [group.topic_id for group in groups]
@@ -210,13 +241,18 @@ def main():
     parser.add_argument("--regroup-min-cluster-size", type=int, default=2)
     parser.add_argument(
         "--regroup-unitization-mode",
-        default="fact_sentence",
-        choices=["fact_sentence", "sentence", "paragraph", "chunk"],
+        default="auto_agentic",
+        choices=["auto_agentic", *sorted(SUPPORTED_UNITIZATION_MODES)],
         help=(
-            "Local unit type used before topic regrouping. "
-            "For CR/FactConsolidation the intended setting is fact_sentence; "
-            "non-CR runners should pass paragraph/chunk or implement dialogue-turn unitization."
+            "Local unit type used before topic regrouping. auto_agentic asks the LLM "
+            "to choose per flush window; fixed values are for ablation/reproducibility."
         ),
+    )
+    parser.add_argument("--unitization-router-preview-chars", type=int, default=4000)
+    parser.add_argument(
+        "--allow-unitization-router-fallback",
+        action="store_true",
+        help="If set, router failures fall back to chunk mode instead of stopping the run.",
     )
     args = parser.parse_args()
 
@@ -235,7 +271,10 @@ def main():
         regroup_similarity_threshold=args.regroup_similarity_threshold,
         regroup_min_cluster_size=args.regroup_min_cluster_size,
         regroup_unitization_mode=args.regroup_unitization_mode,
+        unitization_router_preview_chars=args.unitization_router_preview_chars,
+        unitization_router_fail_on_error=not args.allow_unitization_router_fallback,
     )
+    agent.source_name = args.source
     chunks = agent.ingest_chunks(row["context"], chunk_size=args.chunk_size)
 
     results = []

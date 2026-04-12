@@ -12,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
 from short_term_memory import RecentMemoryItem
+from unitization_router import SUPPORTED_UNITIZATION_MODES
 
 
 def _preview_text(text: str, limit: int = 180) -> str:
@@ -89,6 +90,8 @@ class TopicRegrouper:
         self.min_cluster_size = min_cluster_size
         self.reciprocal_top_k = reciprocal_top_k
         self.unitization_mode = unitization_mode
+        if self.unitization_mode not in SUPPORTED_UNITIZATION_MODES:
+            raise ValueError(f"Unsupported unitization_mode '{self.unitization_mode}'.")
         self.partition_candidates = [
             (None, reciprocal_top_k),
             (0.0, 5),
@@ -129,27 +132,62 @@ class TopicRegrouper:
         paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
         return paragraphs or [text.strip()]
 
+    def _dialogue_turn_units(self, text: str) -> List[str]:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        turns: List[str] = []
+        current: List[str] = []
+        turn_start = re.compile(r"^(?:<[^>]+>|(?:User|Assistant|System|Human|AI|Recommender|Customer)\s*:)", re.I)
+        for line in lines:
+            if turn_start.match(line) and current:
+                turns.append(" ".join(current).strip())
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            turns.append(" ".join(current).strip())
+        if len(turns) > 1:
+            return turns
+        return self._paragraph_units(text)
+
+    def _example_units(self, text: str) -> List[str]:
+        examples = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+        if len(examples) > 1:
+            return examples
+        label_starts = list(re.finditer(r"(?im)^(?:example\s*\d+|utterance|question|text)\s*[:：]", text))
+        if len(label_starts) > 1:
+            units = []
+            for idx, match in enumerate(label_starts):
+                start = match.start()
+                end = label_starts[idx + 1].start() if idx + 1 < len(label_starts) else len(text)
+                units.append(text[start:end].strip())
+            return [unit for unit in units if unit]
+        return self._paragraph_units(text)
+
     def _chunk_units(self, text: str) -> List[str]:
         stripped = text.strip()
         return [stripped] if stripped else []
 
-    def _item_to_unit_texts(self, item: RecentMemoryItem) -> tuple[str, List[str]]:
-        if self.unitization_mode in {"fact_sentence", "sentence"}:
+    def _item_to_unit_texts(self, item: RecentMemoryItem, unitization_mode: str) -> tuple[str, List[str]]:
+        if unitization_mode in {"fact_sentence", "sentence"}:
             return "fact_sentence", self._normalize_sentence_units(item.raw_text)
-        if self.unitization_mode == "paragraph":
+        if unitization_mode == "dialogue_turn":
+            return "dialogue_turn", self._dialogue_turn_units(item.raw_text)
+        if unitization_mode == "paragraph":
             return "paragraph", self._paragraph_units(item.raw_text)
-        if self.unitization_mode == "chunk":
+        if unitization_mode == "example":
+            return "example", self._example_units(item.raw_text)
+        if unitization_mode == "chunk":
             return "chunk", self._chunk_units(item.raw_text)
         raise ValueError(
-            f"Unknown unitization_mode '{self.unitization_mode}'. "
-            "Supported modes: fact_sentence, sentence, paragraph, chunk."
+            f"Unknown unitization_mode '{unitization_mode}'. "
+            f"Supported modes: {sorted(SUPPORTED_UNITIZATION_MODES)}."
         )
 
-    def _to_units(self, items: Sequence[RecentMemoryItem]) -> List[RegroupUnit]:
+    def _to_units(self, items: Sequence[RecentMemoryItem], unitization_mode: str) -> List[RegroupUnit]:
         units: List[RegroupUnit] = []
         global_idx = 0
         for item in items:
-            unit_type, unit_texts = self._item_to_unit_texts(item)
+            unit_type, unit_texts = self._item_to_unit_texts(item, unitization_mode)
             for local_idx, unit_text in enumerate(unit_texts):
                 units.append(
                     RegroupUnit(
@@ -376,10 +414,19 @@ class TopicRegrouper:
         ]
         return ClusteringResult(clusters, timings, selected_candidate, candidate_scores)
 
-    def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
+    def regroup(
+        self,
+        window_id: str,
+        items: Sequence[RecentMemoryItem],
+        unitization_mode: Optional[str] = None,
+        unitization_decision: Optional[Dict[str, Any]] = None,
+    ) -> List[TopicGroup]:
+        active_unitization_mode = unitization_mode or self.unitization_mode
+        if active_unitization_mode not in SUPPORTED_UNITIZATION_MODES:
+            raise ValueError(f"Unsupported unitization_mode '{active_unitization_mode}'.")
         total_start_time = time.perf_counter()
         unit_start_time = time.perf_counter()
-        units = self._to_units(items)
+        units = self._to_units(items, active_unitization_mode)
         unitization_seconds = time.perf_counter() - unit_start_time
         if not units:
             return []
@@ -430,7 +477,8 @@ class TopicRegrouper:
                 "window_id": window_id,
                 "input_chunk_ids": [item.chunk_id for item in items],
                 "input_chunk_count": len(items),
-                "unitization_mode": self.unitization_mode,
+                "unitization_mode": active_unitization_mode,
+                "unitization_decision": unitization_decision,
                 "unit_count": len(units),
                 "sentence_count": len(units),
                 "cluster_count": len(groups),

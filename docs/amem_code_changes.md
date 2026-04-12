@@ -24,6 +24,31 @@
 - 非 CR 数据后续应按数据形态选择 turn / paragraph / discourse block / example 等局部单位
 - 方法表述从 sentence-level topic clustering 调整为 format-aware unitization + buffer-level regrouping
 
+## 2026-04-12 - Agentic unitization router
+
+更新范围：
+
+- `AgenticMemory/unitization_router.py`
+- `AgenticMemory/topic_regrouper.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+- `AgenticMemory/profile_topic_regrouping.py`
+
+主要变更：
+
+- 新增 `AgenticUnitizationRouter`
+- 新增结构化 `UnitizationDecision`
+- `--regroup-unitization-mode` 默认改为 `auto_agentic`
+- 固定模式保留为 ablation 参数
+- 新增 `dialogue_turn` 与 `example` unitization 支持
+- `TopicRegrouper.regroup()` 支持 per-window unitization override
+- group trace 记录 `unitization_decision`
+
+验证：
+
+- `py_compile` 通过
+- mock LLM smoke test 通过
+- OpenRouter `gpt-5.4-mini` router API smoke test 通过，CR preview 被判定为 `fact_sentence`
+
 ## 1. embedding 改造
 
 目标：

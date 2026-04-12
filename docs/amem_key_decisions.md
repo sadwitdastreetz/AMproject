@@ -537,3 +537,34 @@ profiling 观察：
 - 这个修正暂时解决了“CR 上 sentence-level 可能过拟合”的方法论问题
 - 论文/报告中应写成 format-aware unitization，而不是 sentence-level topic clustering
 - Stage B topic regrouping 仍未收口，后续需要在非 CR 数据或更自然的 dialogue/document 形态上重新验证
+
+## 29. 关于 agentic unitization router 的决定
+
+当前新增决策：
+
+1. `unitization_mode` 不再只作为人工指定参数。
+2. 新增 agentic router，让记忆系统在每个 flush window 进入 regrouping 前自行判断局部离散单位。
+3. 默认策略改为：
+   - `--regroup-unitization-mode auto_agentic`
+4. 固定模式仍保留，用于 ablation 和复现实验：
+   - `fact_sentence`
+   - `dialogue_turn`
+   - `paragraph`
+   - `example`
+   - `chunk`
+   - `sentence`
+5. router 输出必须是结构化 decision：
+   - `mode`
+   - `confidence`
+   - `reason`
+   - `router_type`
+   - `fallback_used`
+6. 默认 router 失败时终止实验，避免 silent fallback 污染实验结果。
+7. 如需容错，可显式传入：
+   - `--allow-unitization-router-fallback`
+
+当前判断：
+
+- 这是更符合 agentic memory evolution 的方向
+- 代价是每个 flush window 增加一次 LLM 调用
+- 后续实验报告必须记录 router decision，否则不能解释 regrouping 的输入单位选择

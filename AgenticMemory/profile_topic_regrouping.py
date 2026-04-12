@@ -9,6 +9,7 @@ from datasets import load_dataset
 from memory_layer import DEFAULT_EMBEDDING_MODEL
 from short_term_memory import RecentMemoryItem, TokenCounter
 from topic_regrouper import TopicRegrouper
+from unitization_router import SUPPORTED_UNITIZATION_MODES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,7 +49,7 @@ def main():
     parser.add_argument(
         "--regroup-unitization-mode",
         default="fact_sentence",
-        choices=["fact_sentence", "sentence", "paragraph", "chunk"],
+        choices=sorted(SUPPORTED_UNITIZATION_MODES),
     )
     parser.add_argument("--trace-path", default="profile_topic_regrouping_trace.jsonl")
     parser.add_argument("--output", default="profile_topic_regrouping_result.json")

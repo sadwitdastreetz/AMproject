@@ -1250,3 +1250,50 @@ Stage B FIFO sliding buffer：
   - `chunk`：`groups = 1`, `units = 2`
   - 三种模式均能写出 `unitization_mode`, `unit_count`, `unit_indices` trace 字段
 - 已检查 runner/profiling CLI help，确认 `--regroup-unitization-mode {fact_sentence,sentence,paragraph,chunk}` 参数可见
+
+## 2026-04-12 - Method update: agentic unitization router
+
+类型：
+
+- 方法论与代码接口更新
+- 未新增 benchmark 结果
+
+背景：
+
+- 用户明确要求 `unitization_mode` 交给记忆系统自己决定
+- 当前目标是 agentic memory evolution，因此 unitization decision 可以成为 memory construction 的一部分
+
+代码更新：
+
+- 新增 `AgenticMemory/unitization_router.py`
+  - `AgenticUnitizationRouter`
+  - `UnitizationDecision`
+  - `SUPPORTED_UNITIZATION_MODES`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - `--regroup-unitization-mode` 默认改为 `auto_agentic`
+  - 新增 `--unitization-router-preview-chars`
+  - 新增 `--allow-unitization-router-fallback`
+  - 每个 flush window 在 regrouping 前调用 router 选择 unitization mode
+  - `flush_history` 和 group trace 记录 `unitization_decision`
+- `AgenticMemory/topic_regrouper.py`
+  - 支持 per-call override `unitization_mode`
+  - 新增 `dialogue_turn` 与 `example` 两种 unitization 支持
+- `AgenticMemory/profile_topic_regrouping.py`
+  - 同步支持完整 fixed unitization mode 集合
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\unitization_router.py AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
+- 已运行 mock LLM 隔离 smoke test：
+  - router 选择 `dialogue_turn`
+  - regrouping 使用 router decision override
+  - trace 正确写入 `unitization_decision`
+- 已运行 OpenRouter `gpt-5.4-mini` 极小 API smoke test：
+  - 输入 CR facts preview
+  - router 输出 `mode = fact_sentence`
+  - `confidence = 0.99`
+  - `fallback_used = False`
+- 已检查 runner CLI help：
+  - `--regroup-unitization-mode {auto_agentic,chunk,dialogue_turn,example,fact_sentence,paragraph,sentence}`
+  - `--unitization-router-preview-chars`
+  - `--allow-unitization-router-fallback`
