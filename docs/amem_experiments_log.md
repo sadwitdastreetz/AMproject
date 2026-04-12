@@ -1244,3 +1244,9 @@ Stage B FIFO sliding buffer：
 验证：
 
 - 已运行 `python -m py_compile AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
+- 已在 `amem310` 环境运行隔离 smoke test：
+  - `fact_sentence`：`groups = 2`, `units = 5`
+  - `paragraph`：`groups = 2`, `units = 4`
+  - `chunk`：`groups = 1`, `units = 2`
+  - 三种模式均能写出 `unitization_mode`, `unit_count`, `unit_indices` trace 字段
+- 已检查 runner/profiling CLI help，确认 `--regroup-unitization-mode {fact_sentence,sentence,paragraph,chunk}` 参数可见
