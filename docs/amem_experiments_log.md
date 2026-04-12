@@ -1112,3 +1112,93 @@ Stage B FIFO sliding buffer：
 - 但默认 `similarity_threshold=0.42` 与 `reciprocal_top_k=5` 仍会产生 giant cluster
 - 因此它目前只能视为轻量 baseline，不能直接视为优于 KMeans 的最终替代
 - 下一步如果跑完整 benchmark，应同时考虑提高阈值或降低 top-k 做 ablation
+
+## 2026-04-12 - Adaptive partition selection for topic regrouping
+
+目的：
+
+- 在不恢复 KMeans 的前提下，解决 edge pruning baseline 的 giant cluster 问题
+- 不全局固定 `alpha/top_m`
+- 对每个 flush window 自适应选择结构评分最好的 graph partition
+
+实现：
+
+- `AgenticMemory/topic_regrouper.py`
+  - 对同一个 window 生成多个 candidate partitions
+  - 每个 candidate 仍然使用：
+    - global similarity threshold
+    - reciprocal top-k
+    - local edge pruning
+    - connected components
+  - 候选集：
+    - base reciprocal top-k
+    - `alpha=0.0, top_m=5`
+    - `alpha=0.0, top_m=3`
+    - `alpha=0.5, top_m=3`
+    - `alpha=1.0, top_m=3`
+    - `alpha=0.5, top_m=2`
+    - `alpha=1.0, top_m=2`
+  - 对 tiny components 做 nearest non-tiny centroid attachment，防止 singleton 直接成为 archival notes
+  - 用结构评分选择最终 partition
+
+评分：
+
+- `semantics_score`
+- `balance_score`
+- `avg_size_score`
+- `fragmentation_penalty`
+- `giant_penalty`
+
+当前 score：
+
+- `score = semantics_score + 0.25 * balance_score + 0.75 * avg_size_score - 1.5 * fragmentation_penalty - 0.7 * giant_penalty`
+
+隔离 profiling 条件：
+
+- source：`factconsolidation_sh_32k`
+- `chunk_size = 512`
+- profiling window：`window_0000`
+- 输入 chunk：`chunk_0000` 到 `chunk_0007`
+- 输入句子数：`306`
+- embedding：`openai/text-embedding-3-small`
+
+产物：
+
+- `AgenticMemory/profile_topic_regrouping_adaptive_partition_v3_sh32k_window0_result.json`
+- `AgenticMemory/profile_topic_regrouping_adaptive_partition_v3_sh32k_window0_trace.jsonl`
+
+结果：
+
+- selected candidate：
+  - `alpha = 1.0`
+  - `top_m = 3`
+- `groups_count = 65`
+- 最大 group 句子数：`16`
+- singleton ratio：`0.0`
+- tiny cluster ratio：`0.0`
+- `total_seconds = 6.5471`
+- `embedding_seconds = 6.1823`
+- `partition_selection_seconds = 0.3340`
+
+与前序版本对比：
+
+- KMeans 版本：
+  - `groups_count = 28`
+  - 最大 group 约 `66`
+  - `total_seconds = 14.1450`
+- edge pruning baseline：
+  - `groups_count = 25`
+  - 最大 group `121`
+  - `total_seconds = 5.6586`
+- adaptive partition selection：
+  - `groups_count = 65`
+  - 最大 group `16`
+  - `total_seconds = 6.5471`
+
+当前观察：
+
+- adaptive partition selection 明显压制了 giant cluster
+- 相比 KMeans 仍显著更快
+- 相比 naive edge pruning，partition selection 多花约 `0.33s`，主要成本仍是 embedding
+- 当前风险是 groups 数量偏多，可能带来 archival note 碎片化
+- 下一步需要跑 `8192/4096` 小基准确认 QA 指标，不应只看结构指标

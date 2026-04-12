@@ -59,6 +59,17 @@ class TopicGroup:
 class ClusteringResult:
     clusters: List[List[SentenceUnit]]
     timings: Dict[str, float]
+    selected_candidate: Dict[str, Any]
+    candidate_scores: List[Dict[str, Any]]
+
+
+@dataclass
+class PartitionCandidate:
+    alpha: Optional[float]
+    top_m: int
+    clusters: List[List[int]]
+    score: float
+    metrics: Dict[str, float]
 
 
 class TopicRegrouper:
@@ -75,6 +86,15 @@ class TopicRegrouper:
         self.similarity_threshold = similarity_threshold
         self.min_cluster_size = min_cluster_size
         self.reciprocal_top_k = reciprocal_top_k
+        self.partition_candidates = [
+            (None, reciprocal_top_k),
+            (0.0, 5),
+            (0.0, 3),
+            (0.5, 3),
+            (1.0, 3),
+            (0.5, 2),
+            (1.0, 2),
+        ]
         self.trace_logger = GroupTraceLogger(trace_path)
 
     def _normalize_sentences(self, text: str) -> List[str]:
@@ -119,45 +139,9 @@ class TopicRegrouper:
                 global_idx += 1
         return units
 
-    def _cluster_units(self, units: List[SentenceUnit]) -> ClusteringResult:
-        timings = {
-            "embedding_seconds": 0.0,
-            "similarity_seconds": 0.0,
-            "graph_build_seconds": 0.0,
-            "connected_components_seconds": 0.0,
-        }
-        if len(units) <= 1:
-            start_time = time.perf_counter()
-            embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
-            timings["embedding_seconds"] = time.perf_counter() - start_time
-            return ClusteringResult([units], timings)
-
-        start_time = time.perf_counter()
-        embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
-        timings["embedding_seconds"] = time.perf_counter() - start_time
-
-        start_time = time.perf_counter()
-        sim = cosine_similarity(embeddings)
-        timings["similarity_seconds"] = time.perf_counter() - start_time
-
-        start_time = time.perf_counter()
-        adjacency = {idx: set() for idx in range(len(units))}
-        neighbor_sets: List[set[int]] = []
-        for i in range(len(units)):
-            ranked = np.argsort(sim[i])[::-1]
-            filtered = [idx for idx in ranked if idx != i and sim[i, idx] >= self.similarity_threshold]
-            neighbor_sets.append(set(filtered[: self.reciprocal_top_k]))
-        for i in range(len(units)):
-            adjacency[i].add(i)
-            for j in range(i + 1, len(units)):
-                if sim[i, j] >= self.similarity_threshold and i in neighbor_sets[j] and j in neighbor_sets[i]:
-                    adjacency[i].add(j)
-                    adjacency[j].add(i)
-        timings["graph_build_seconds"] = time.perf_counter() - start_time
-
-        start_time = time.perf_counter()
+    def _connected_components(self, adjacency: Dict[int, set[int]], units: List[SentenceUnit]) -> List[List[int]]:
         visited = set()
-        clusters: List[List[SentenceUnit]] = []
+        clusters: List[List[int]] = []
         for idx in range(len(units)):
             if idx in visited:
                 continue
@@ -170,20 +154,203 @@ class TopicRegrouper:
                 visited.add(node)
                 component.append(node)
                 stack.extend(adjacency[node] - visited)
-            cluster_units = [units[i] for i in sorted(component, key=lambda x: units[x].global_idx)]
-            clusters.append(cluster_units)
-        timings["connected_components_seconds"] = time.perf_counter() - start_time
+            clusters.append(sorted(component, key=lambda x: units[x].global_idx))
+        return clusters
 
-        large_clusters = [cluster for cluster in clusters if len(cluster) >= self.min_cluster_size]
-        small_clusters = [cluster for cluster in clusters if len(cluster) < self.min_cluster_size]
+    def _build_candidate_partition(
+        self,
+        sim: np.ndarray,
+        units: List[SentenceUnit],
+        base_neighbor_lists: List[List[int]],
+        alpha: Optional[float],
+        top_m: int,
+    ) -> List[List[int]]:
+        directed_neighbors: List[set[int]] = []
+        for i, candidates in enumerate(base_neighbor_lists):
+            if not candidates:
+                directed_neighbors.append(set())
+                continue
+            if alpha is None:
+                kept = candidates
+            else:
+                scores = np.array([sim[i, idx] for idx in candidates], dtype=np.float32)
+                local_threshold = float(scores.mean() + alpha * scores.std())
+                kept = [idx for idx in candidates if sim[i, idx] >= local_threshold]
+            directed_neighbors.append(set(kept[:top_m]))
 
-        if not large_clusters:
-            return ClusteringResult([sorted(units, key=lambda unit: unit.global_idx)], timings)
+        adjacency = {idx: {idx} for idx in range(len(units))}
+        for i in range(len(units)):
+            for j in directed_neighbors[i]:
+                if i < j and i in directed_neighbors[j]:
+                    adjacency[i].add(j)
+                    adjacency[j].add(i)
+        return self._connected_components(adjacency, units)
 
-        for cluster in small_clusters:
-            large_clusters[0].extend(cluster)
-            large_clusters[0].sort(key=lambda unit: unit.global_idx)
-        return ClusteringResult(large_clusters, timings)
+    def _cluster_cohesion(self, cluster: List[int], embeddings: np.ndarray) -> float:
+        if len(cluster) < self.min_cluster_size:
+            return 0.0
+        cluster_embeddings = embeddings[cluster]
+        centroid = cluster_embeddings.mean(axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm == 0:
+            return 0.0
+        centroid = centroid / norm
+        embedding_norms = np.linalg.norm(cluster_embeddings, axis=1)
+        valid = embedding_norms > 0
+        if not np.any(valid):
+            return 0.0
+        normalized_embeddings = cluster_embeddings[valid] / embedding_norms[valid][:, None]
+        return float(np.mean(normalized_embeddings @ centroid))
+
+    def _score_partition(self, clusters: List[List[int]], embeddings: np.ndarray) -> Dict[str, float]:
+        n_units = len(embeddings)
+        k_clusters = max(1, len(clusters))
+        sizes = [len(cluster) for cluster in clusters]
+        non_tiny = [cluster for cluster in clusters if len(cluster) >= self.min_cluster_size]
+
+        if non_tiny:
+            weighted_cohesion = sum(
+                len(cluster) * self._cluster_cohesion(cluster, embeddings)
+                for cluster in non_tiny
+            )
+            semantics_score = weighted_cohesion / sum(len(cluster) for cluster in non_tiny)
+        else:
+            semantics_score = 0.0
+
+        size_square_sum = sum(size * size for size in sizes) or 1
+        balance_score = (n_units * n_units) / (k_clusters * size_square_sum)
+        singleton_ratio = sum(1 for size in sizes if size == 1) / k_clusters
+        tiny_cluster_ratio = sum(1 for size in sizes if size < self.min_cluster_size) / k_clusters
+        fragmentation_penalty = singleton_ratio + 0.5 * tiny_cluster_ratio
+        giant_penalty = (max(sizes) / n_units) if sizes and n_units else 0.0
+        avg_cluster_size = n_units / k_clusters
+        target_avg_cluster_size = 8.0
+        avg_size_score = float(np.exp(-abs(np.log(max(avg_cluster_size, 1e-6) / target_avg_cluster_size))))
+        score = (
+            1.0 * semantics_score
+            + 0.25 * balance_score
+            + 0.75 * avg_size_score
+            - 1.5 * fragmentation_penalty
+            - 0.7 * giant_penalty
+        )
+        return {
+            "score": float(score),
+            "semantics_score": float(semantics_score),
+            "balance_score": float(balance_score),
+            "avg_size_score": float(avg_size_score),
+            "avg_cluster_size": float(avg_cluster_size),
+            "fragmentation_penalty": float(fragmentation_penalty),
+            "giant_penalty": float(giant_penalty),
+            "singleton_ratio": float(singleton_ratio),
+            "tiny_cluster_ratio": float(tiny_cluster_ratio),
+            "cluster_count": float(k_clusters),
+            "max_cluster_size": float(max(sizes) if sizes else 0),
+        }
+
+    def _cluster_centroid(self, cluster: List[int], embeddings: np.ndarray) -> np.ndarray:
+        centroid = embeddings[cluster].mean(axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm == 0:
+            return centroid
+        return centroid / norm
+
+    def _attach_tiny_clusters(self, clusters: List[List[int]], embeddings: np.ndarray) -> List[List[int]]:
+        large_clusters = [list(cluster) for cluster in clusters if len(cluster) >= self.min_cluster_size]
+        tiny_clusters = [list(cluster) for cluster in clusters if len(cluster) < self.min_cluster_size]
+        if not large_clusters or not tiny_clusters:
+            return [sorted(cluster) for cluster in clusters]
+
+        centroids = [self._cluster_centroid(cluster, embeddings) for cluster in large_clusters]
+        for tiny_cluster in tiny_clusters:
+            tiny_centroid = self._cluster_centroid(tiny_cluster, embeddings)
+            similarities = [float(tiny_centroid @ centroid) for centroid in centroids]
+            best_idx = int(np.argmax(similarities))
+            large_clusters[best_idx].extend(tiny_cluster)
+            large_clusters[best_idx].sort()
+            centroids[best_idx] = self._cluster_centroid(large_clusters[best_idx], embeddings)
+        return [sorted(cluster) for cluster in large_clusters]
+
+    def _select_partition(
+        self,
+        sim: np.ndarray,
+        embeddings: np.ndarray,
+        units: List[SentenceUnit],
+    ) -> tuple[List[List[int]], Dict[str, Any], List[Dict[str, Any]]]:
+        base_neighbor_lists: List[List[int]] = []
+        for i in range(len(units)):
+            ranked = np.argsort(sim[i])[::-1]
+            filtered = [idx for idx in ranked if idx != i and sim[i, idx] >= self.similarity_threshold]
+            base_neighbor_lists.append(filtered[: self.reciprocal_top_k])
+
+        candidates: List[PartitionCandidate] = []
+        for alpha, top_m in self.partition_candidates:
+            raw_clusters = self._build_candidate_partition(sim, units, base_neighbor_lists, alpha, top_m)
+            clusters = self._attach_tiny_clusters(raw_clusters, embeddings)
+            metrics = self._score_partition(clusters, embeddings)
+            candidates.append(
+                PartitionCandidate(
+                    alpha=alpha,
+                    top_m=top_m,
+                    clusters=clusters,
+                    score=metrics["score"],
+                    metrics=metrics,
+                )
+            )
+
+        selected = max(candidates, key=lambda candidate: candidate.score)
+        candidate_scores = []
+        for candidate in candidates:
+            sizes = [len(cluster) for cluster in candidate.clusters]
+            candidate_scores.append(
+                {
+                    "alpha": candidate.alpha,
+                    "top_m": candidate.top_m,
+                    "score": candidate.score,
+                    "cluster_count": len(candidate.clusters),
+                    "max_cluster_size": max(sizes) if sizes else 0,
+                    "cluster_sizes": sizes,
+                    **candidate.metrics,
+                }
+            )
+        selected_payload = {
+            "alpha": selected.alpha,
+            "top_m": selected.top_m,
+            "score": selected.score,
+            "cluster_count": len(selected.clusters),
+            "max_cluster_size": max(len(cluster) for cluster in selected.clusters) if selected.clusters else 0,
+        }
+        return selected.clusters, selected_payload, candidate_scores
+
+    def _cluster_units(self, units: List[SentenceUnit]) -> ClusteringResult:
+        timings = {
+            "embedding_seconds": 0.0,
+            "similarity_seconds": 0.0,
+            "partition_selection_seconds": 0.0,
+        }
+        if len(units) <= 1:
+            start_time = time.perf_counter()
+            embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
+            timings["embedding_seconds"] = time.perf_counter() - start_time
+            selected_candidate = {"alpha": None, "top_m": None, "score": 0.0, "cluster_count": len(units)}
+            return ClusteringResult([units], timings, selected_candidate, [])
+
+        start_time = time.perf_counter()
+        embeddings = np.array(self.model.encode([unit.text for unit in units]), dtype=np.float32)
+        timings["embedding_seconds"] = time.perf_counter() - start_time
+
+        start_time = time.perf_counter()
+        sim = cosine_similarity(embeddings)
+        timings["similarity_seconds"] = time.perf_counter() - start_time
+
+        start_time = time.perf_counter()
+        selected_clusters, selected_candidate, candidate_scores = self._select_partition(sim, embeddings, units)
+        timings["partition_selection_seconds"] = time.perf_counter() - start_time
+
+        clusters = [
+            [units[i] for i in sorted(cluster, key=lambda x: units[x].global_idx)]
+            for cluster in selected_clusters
+        ]
+        return ClusteringResult(clusters, timings, selected_candidate, candidate_scores)
 
     def regroup(self, window_id: str, items: Sequence[RecentMemoryItem]) -> List[TopicGroup]:
         total_start_time = time.perf_counter()
@@ -240,6 +407,8 @@ class TopicRegrouper:
                 "clustering_strategy": "edge_pruning_connected_components",
                 "similarity_threshold": self.similarity_threshold,
                 "reciprocal_top_k": self.reciprocal_top_k,
+                "selected_candidate": clustering_result.selected_candidate,
+                "candidate_scores": clustering_result.candidate_scores,
                 "timing_seconds": timing_seconds,
                 "clusters": cluster_payload,
             },

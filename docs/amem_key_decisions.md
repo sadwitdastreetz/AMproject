@@ -475,3 +475,40 @@ profiling 观察：
 - edge pruning + connected components 是更轻量、更可解释的 baseline
 - 但它当前不是最终方案
 - 后续需要做 threshold / top-k ablation，重点观察 giant cluster 是否能自然裂解
+
+## 27. 关于 adaptive partition selection 的决定
+
+当前新增决策：
+
+1. 不回退到 KMeans。
+2. 在 edge pruning + connected components 基础上加入 window-adaptive partition selection。
+3. 每个 flush window 内生成多个 candidate partitions，再用结构评分选择最终 topic groups。
+4. 为避免 singleton 过多，加入 nearest non-tiny centroid attachment：
+   - 只吸收 tiny components
+   - 不做 KMeans 式全局重聚类
+
+当前 scoring：
+
+- `score = semantics_score + 0.25 * balance_score + 0.75 * avg_size_score - 1.5 * fragmentation_penalty - 0.7 * giant_penalty`
+
+单 window profiling 观察：
+
+- selected candidate：
+  - `alpha = 1.0`
+  - `top_m = 3`
+- `groups_count = 65`
+- `max_cluster_size = 16`
+- `total_seconds = 6.5471`
+- `partition_selection_seconds = 0.3340`
+
+与前序版本相比：
+
+- naive edge pruning 的 `121` 句 giant cluster 被压制
+- KMeans 的主要耗时被移除
+- 新风险是 groups 数量偏多，可能导致 archival note 碎片化
+
+当前判断：
+
+- adaptive partition selection 是比 KMeans 更有方法论解释力的方向
+- 但当前只是 structural baseline，不等于 QA 性能已验证
+- 下一步应该在 `ping-pong buffer 8192 / region 4096` 条件下跑前 50 问，对比 KMeans 版本的 `exact_match = 0.5800`, `f1 = 0.6133`
