@@ -1387,3 +1387,47 @@ Stage B FIFO sliding buffer：
 注意：
 
 - 非 monkeypatch 的 `ShortTermMemoryBuffer.add_turn()` 会重建 recent embedding index，因此仍需要正确配置 `OPENAI_BASE_URL` / embedding API 后才能跑完整在线链路
+
+## 2026-04-13 - Structure update: MemoryUnit semantic decomposition
+
+类型：
+
+- 结构接线
+- 未新增 benchmark 结果
+
+背景：
+
+- 当前暂停继续依赖 sentence/fact split 作为 topic regrouping 的输入
+- 用户明确希望借鉴 SimpleMem 的 semantic structured compression 思想
+- 关键要求是一个 `MemoryTurn` 可生成多个事实/记忆单元，统一 CR 与自然对话数据
+
+代码更新：
+
+- 新增 `AgenticMemory/memory_unit_decomposer.py`
+  - `MemoryUnit`
+  - `MemoryUnitDecomposer`
+  - `MemoryUnitTraceLogger`
+- `AgenticMemory/topic_regrouper.py`
+  - 新增 `regroup_units(window_id, memory_units)`
+  - embedding / clustering 输入使用 `MemoryUnit.content`
+  - group trace 记录 `memory_unit_ids`, `topics`, `entities`, `keywords`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - 新增 `--unit-trace-path`
+  - topic regrouping flush path 改为 `MemoryTurn -> MemoryUnit -> TopicGroup -> A-Mem note`
+  - `flush_history` 记录 `memory_unit_count` 和 `memory_unit_ids`
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\memory_unit_decomposer.py AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py AgenticMemory\profile_topic_regrouping.py`
+- 已运行离线 mock smoke test：
+  - mock LLM 返回合法 JSON array 时，一个 `MemoryTurn` 生成 2 个 `MemoryUnit`
+  - mock LLM 返回非法 JSON 时，decomposer 返回空列表
+  - mock embedding model 下 `TopicRegrouper.regroup_units()` 可生成 `TopicGroup`
+- 已检查 `memoryagentbench_cr_runner.py --help`：
+  - 新增 `--unit-trace-path`
+
+当前判断：
+
+- 当前只完成结构接线，不等同于完成实验验证
+- 下一步应跑 CR 小规模 smoke，再跑前 50 问对照
+- 需要重点观察 decomposition 是否漏事实、是否引入幻觉、以及 LLM 调用成本

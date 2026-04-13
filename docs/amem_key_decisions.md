@@ -613,3 +613,28 @@ profiling 观察：
 - 真正值得继续沉淀的是 `MemoryTurn -> sliding window over turns -> List[MemoryUnit]`。
 - 未来如果做 agentic decomposition，应输出多个结构化 `MemoryUnit`，而不是让系统先选择一个粗粒度 `unitization_mode`。
 - 这次整理的目的不是提出新方法，而是把代码从 CR 过拟合的临时抽象中退出来。
+
+## 32. 关于 MemoryUnit semantic decomposition 的决定
+
+当前新增决策：
+
+1. 保留现有 `MemoryTurn + ping-pong buffer + A-Mem archival + Recent-first retrieval` 流程。
+2. 替换当前最脆弱的 `MemoryTurn.raw_context -> sentence/fact split` 路径。
+3. 借鉴 SimpleMem 的 semantic structured compression / MemoryEntry 思想，但不照搬其 sliding window、retrieval store 或完整 pipeline。
+4. 第一版 decomposition 单位固定为单个完整 `MemoryTurn`：
+   - 不做 sliding window
+   - 一个 `MemoryTurn` 可以输出多个 `MemoryUnit`
+   - `MemoryUnit.content` 必须 self-contained
+5. 第一版保留现有 clustering：
+   - cluster 输入从 sentence text 改成 `MemoryUnit.content`
+   - grouped memory units 继续包装成官方 memorize prompt 后写入 A-Mem
+6. 解析失败不 fallback 到 sentence split：
+   - 返回空 `MemoryUnit` list
+   - 写入 unit trace
+   - 避免把新方法和旧 sentence split 变量混在一起
+
+当前判断：
+
+- 这是比 `unitization_mode` 更清晰的通用抽象。
+- 该方案可以统一 CR 的 numbered facts 与 LongMemEval/LoCoMo 的自然 dialogue turn。
+- 后续需要用小规模实验观察 decomposition 漏事实、幻觉和额外 token 成本。

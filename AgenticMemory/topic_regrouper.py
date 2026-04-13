@@ -10,6 +10,7 @@ import numpy as np
 from nltk.tokenize import sent_tokenize
 from sklearn.metrics.pairwise import cosine_similarity
 
+from memory_unit_decomposer import MemoryUnit
 from memory_layer import DEFAULT_EMBEDDING_MODEL, build_embedding_model
 from short_term_memory import MemoryTurn
 
@@ -41,11 +42,16 @@ class GroupTraceLogger:
 
 @dataclass
 class RegroupUnit:
+    unit_id: str
     turn_id: str
     local_idx: int
     global_idx: int
     text: str
     unit_type: str
+    keywords: List[str]
+    topic: Optional[str]
+    entities: List[str]
+    source_turn_ids: List[str]
 
 
 @dataclass
@@ -53,6 +59,7 @@ class TopicGroup:
     topic_id: str
     source_turn_ids: List[str]
     source_chunk_ids: List[str]
+    memory_unit_ids: List[str]
     unit_indices: List[int]
     text: str
 
@@ -134,14 +141,38 @@ class TopicRegrouper:
             for local_idx, unit_text in enumerate(unit_texts):
                 units.append(
                     RegroupUnit(
+                        unit_id=f"{turn.turn_id}_legacy_unit_{local_idx:02d}",
                         turn_id=turn.turn_id,
                         local_idx=local_idx,
                         global_idx=global_idx,
                         text=unit_text,
                         unit_type=unit_type,
+                        keywords=[],
+                        topic=None,
+                        entities=[],
+                        source_turn_ids=[turn.turn_id],
                     )
                 )
                 global_idx += 1
+        return units
+
+    def _memory_units_to_regroup_units(self, memory_units: Sequence[MemoryUnit]) -> List[RegroupUnit]:
+        units: List[RegroupUnit] = []
+        for global_idx, memory_unit in enumerate(memory_units):
+            units.append(
+                RegroupUnit(
+                    unit_id=memory_unit.unit_id,
+                    turn_id=memory_unit.source_turn_id,
+                    local_idx=global_idx,
+                    global_idx=global_idx,
+                    text=memory_unit.content,
+                    unit_type="memory_unit",
+                    keywords=memory_unit.keywords,
+                    topic=memory_unit.topic,
+                    entities=memory_unit.entities,
+                    source_turn_ids=memory_unit.source_turn_ids,
+                )
+            )
         return units
 
     def _connected_components(self, adjacency: Dict[int, set[int]], units: List[RegroupUnit]) -> List[List[int]]:
@@ -387,6 +418,7 @@ class TopicRegrouper:
                     topic_id=f"{window_id}_topic_{idx:02d}",
                     source_turn_ids=source_turn_ids,
                     source_chunk_ids=source_turn_ids,
+                    memory_unit_ids=[unit.unit_id for unit in cluster],
                     unit_indices=[unit.global_idx for unit in cluster],
                     text=text,
                 )
@@ -396,6 +428,7 @@ class TopicRegrouper:
                     "topic_id": f"{window_id}_topic_{idx:02d}",
                     "source_turn_ids": source_turn_ids,
                     "source_chunk_ids": source_turn_ids,
+                    "memory_unit_ids": [unit.unit_id for unit in cluster],
                     "unit_indices": [unit.global_idx for unit in cluster],
                     "sentence_indices": [unit.global_idx for unit in cluster],
                     "unit_count": len(cluster),
@@ -421,6 +454,83 @@ class TopicRegrouper:
                 "input_chunk_count": len(turns),
                 "unit_count": len(units),
                 "sentence_count": len(units),
+                "cluster_count": len(groups),
+                "clustering_strategy": "edge_pruning_connected_components",
+                "similarity_threshold": self.similarity_threshold,
+                "reciprocal_top_k": self.reciprocal_top_k,
+                "selected_candidate": clustering_result.selected_candidate,
+                "candidate_scores": clustering_result.candidate_scores,
+                "timing_seconds": timing_seconds,
+                "clusters": cluster_payload,
+            },
+        )
+        return groups
+
+    def regroup_units(
+        self,
+        window_id: str,
+        memory_units: Sequence[MemoryUnit],
+    ) -> List[TopicGroup]:
+        total_start_time = time.perf_counter()
+        convert_start_time = time.perf_counter()
+        units = self._memory_units_to_regroup_units(memory_units)
+        local_convert_seconds = time.perf_counter() - convert_start_time
+        if not units:
+            return []
+
+        clustering_result = self._cluster_units(units)
+        clusters = clustering_result.clusters
+        groups: List[TopicGroup] = []
+        cluster_payload = []
+        for idx, cluster in enumerate(clusters):
+            cluster = sorted(cluster, key=lambda unit: unit.global_idx)
+            source_turn_ids = []
+            seen_turn_ids = set()
+            for unit in cluster:
+                for source_turn_id in unit.source_turn_ids:
+                    if source_turn_id not in seen_turn_ids:
+                        seen_turn_ids.add(source_turn_id)
+                        source_turn_ids.append(source_turn_id)
+            text = " ".join(unit.text for unit in cluster)
+            memory_unit_ids = [unit.unit_id for unit in cluster]
+            groups.append(
+                TopicGroup(
+                    topic_id=f"{window_id}_topic_{idx:02d}",
+                    source_turn_ids=source_turn_ids,
+                    source_chunk_ids=source_turn_ids,
+                    memory_unit_ids=memory_unit_ids,
+                    unit_indices=[unit.global_idx for unit in cluster],
+                    text=text,
+                )
+            )
+            cluster_payload.append(
+                {
+                    "topic_id": f"{window_id}_topic_{idx:02d}",
+                    "source_turn_ids": source_turn_ids,
+                    "source_chunk_ids": source_turn_ids,
+                    "memory_unit_ids": memory_unit_ids,
+                    "unit_indices": [unit.global_idx for unit in cluster],
+                    "unit_count": len(cluster),
+                    "unit_type": "memory_unit",
+                    "topics": [unit.topic for unit in cluster if unit.topic],
+                    "entities": sorted({entity for unit in cluster for entity in unit.entities}),
+                    "keywords": sorted({keyword for unit in cluster for keyword in unit.keywords}),
+                    "content_preview": _preview_text(text),
+                }
+            )
+
+        timing_seconds = {
+            "memory_unit_convert_seconds": local_convert_seconds,
+            **clustering_result.timings,
+        }
+        timing_seconds["total_seconds"] = time.perf_counter() - total_start_time
+        self.trace_logger.log(
+            "memory_unit_regrouping_complete",
+            {
+                "window_id": window_id,
+                "input_turn_ids": sorted({turn_id for unit in units for turn_id in unit.source_turn_ids}),
+                "input_turn_count": len({turn_id for unit in units for turn_id in unit.source_turn_ids}),
+                "memory_unit_count": len(units),
                 "cluster_count": len(groups),
                 "clustering_strategy": "edge_pruning_connected_components",
                 "similarity_threshold": self.similarity_threshold,

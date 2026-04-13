@@ -8,6 +8,7 @@ from datasets import load_dataset
 
 from memory_layer import DEFAULT_EMBEDDING_MODEL
 from memory_layer_robust import RobustAgenticMemorySystem, RobustLLMController
+from memory_unit_decomposer import MemoryUnitDecomposer
 from short_term_memory import ShortTermMemoryBuffer
 from test_advanced_robust import parse_plain_text_answer
 from topic_regrouper import TopicRegrouper
@@ -36,6 +37,7 @@ class AMemConflictResolutionAgent:
         trace_path: str | None = None,
         recent_trace_path: str | None = None,
         group_trace_path: str | None = None,
+        unit_trace_path: str | None = None,
         recent_token_budget: int = 4096,
         recent_k: int = 5,
         enable_topic_regrouping: bool = False,
@@ -69,6 +71,10 @@ class AMemConflictResolutionAgent:
             similarity_threshold=regroup_similarity_threshold,
             min_cluster_size=regroup_min_cluster_size,
             trace_path=group_trace_path,
+        )
+        self.memory_unit_decomposer = MemoryUnitDecomposer(
+            llm_controller=self.retriever_llm,
+            trace_path=unit_trace_path,
         )
         self.embedding_model = embedding_model
         self.source_name = ""
@@ -109,15 +115,19 @@ class AMemConflictResolutionAgent:
             "retained_buffer_tokens": self.recent_memory.total_tokens,
             "mode": "topic_regrouping" if self.enable_topic_regrouping else "raw_chunk_archive",
             "topic_ids": [],
+            "memory_unit_ids": [],
+            "memory_unit_count": 0,
         }
         if self.enable_topic_regrouping:
-            groups = self.topic_regrouper.regroup(window_id, turns)
+            memory_units = []
+            for turn in turns:
+                memory_units.extend(self.memory_unit_decomposer.decompose(turn, window_id=window_id))
+            flush_record["memory_unit_ids"] = [unit.unit_id for unit in memory_units]
+            flush_record["memory_unit_count"] = len(memory_units)
+            groups = self.topic_regrouper.regroup_units(window_id, memory_units)
             if groups:
                 self._archive_topic_groups(window_id, groups)
                 flush_record["topic_ids"] = [group.topic_id for group in groups]
-            else:
-                for turn in turns:
-                    self._archive_raw_chunk(turn.turn_id, turn.raw_context)
         else:
             for turn in turns:
                 self._archive_raw_chunk(turn.turn_id, turn.raw_context)
@@ -205,6 +215,7 @@ def main():
     parser.add_argument("--trace-path", default=None)
     parser.add_argument("--recent-trace-path", default=None)
     parser.add_argument("--group-trace-path", default=None)
+    parser.add_argument("--unit-trace-path", default=None)
     parser.add_argument("--recent-token-budget", type=int, default=4096)
     parser.add_argument("--recent-k", type=int, default=5)
     parser.add_argument("--enable-topic-regrouping", action="store_true")
@@ -221,6 +232,7 @@ def main():
         trace_path=args.trace_path,
         recent_trace_path=args.recent_trace_path,
         group_trace_path=args.group_trace_path,
+        unit_trace_path=args.unit_trace_path,
         recent_token_budget=args.recent_token_budget,
         recent_k=args.recent_k,
         enable_topic_regrouping=args.enable_topic_regrouping,
@@ -275,6 +287,10 @@ def main():
         "recent_token_budget": args.recent_token_budget,
         "recent_region_size": agent.recent_memory.region_size,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
+        "trace_path": args.trace_path,
+        "recent_trace_path": args.recent_trace_path,
+        "group_trace_path": args.group_trace_path,
+        "unit_trace_path": args.unit_trace_path,
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,
@@ -299,6 +315,8 @@ def main():
         print(f"Recent trace log: {Path(args.recent_trace_path).resolve()}")
     if args.group_trace_path:
         print(f"Group trace log: {Path(args.group_trace_path).resolve()}")
+    if args.unit_trace_path:
+        print(f"Unit trace log: {Path(args.unit_trace_path).resolve()}")
     for metric_name, metric_value in summary.items():
         print(f"{metric_name}: {metric_value:.4f}")
 

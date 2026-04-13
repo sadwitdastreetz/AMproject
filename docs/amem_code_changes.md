@@ -1,5 +1,43 @@
 # A-Mem Code Changes
 
+## 2026-04-13 - Add MemoryUnit semantic decomposition before regrouping
+
+更新范围：
+
+- `AgenticMemory/memory_unit_decomposer.py`
+- `AgenticMemory/topic_regrouper.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+主要变更：
+
+- 新增 `MemoryUnit` 与 `MemoryUnitDecomposer`
+- 借鉴 SimpleMem 的 semantic structured compression / MemoryEntry 思想：一个 `MemoryTurn` 可生成多个 self-contained memory units
+- CR runner 的 topic regrouping flush 路径改为：
+  - `List[MemoryTurn]`
+  - `MemoryUnitDecomposer.decompose(turn)`
+  - `List[MemoryUnit]`
+  - `TopicRegrouper.regroup_units(window_id, memory_units)`
+  - grouped memory units 写入 A-Mem archival notes
+- 新增 `--unit-trace-path`，记录 decomposition trace
+- `TopicRegrouper` 新增 `regroup_units()`，聚类输入从 sentence/fact text 升级为 `MemoryUnit.content`
+- group trace 新增 `memory_unit_ids`, `topics`, `entities`, `keywords`
+
+设计含义：
+
+- 当前不做 sliding window
+- decomposition 单位是一个完整 `MemoryTurn`
+- 解析失败返回空 memory unit list，并写 trace；不 silent fallback 到 sentence split
+- 旧 `regroup()` 仍保留为 legacy path，但 CR runner 主路径已接入 `regroup_units()`
+
+验证：
+
+- `py_compile` 通过
+- 离线 mock smoke test 通过：
+  - 一个 `MemoryTurn` 可生成多个 `MemoryUnit`
+  - 非法 JSON 返回空列表
+  - `regroup_units()` 可将 `MemoryUnit` 聚成 `TopicGroup`
+- CR runner help 已确认新增 `--unit-trace-path`
+
 ## 2026-04-13 - Remove unitization router and keep MemoryTurn ping-pong buffer
 
 更新范围：
