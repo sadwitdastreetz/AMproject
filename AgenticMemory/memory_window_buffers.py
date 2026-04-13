@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from memory_layer import DEFAULT_EMBEDDING_MODEL, SimpleEmbeddingRetriever
 from memory_unit_decomposer import MemoryUnit
 from short_term_memory import MemoryTurn, TokenCounter
 
@@ -141,12 +142,14 @@ class MemoryUnitPingPongBuffer:
     def __init__(
         self,
         token_budget: int = 4096,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         trace_path: Optional[str] = None,
     ):
         self.token_budget = token_budget
         self.region_size = max(1, token_budget // 2)
         self.token_counter = TokenCounter()
         self.trace_logger = WindowTraceLogger(trace_path)
+        self.embedding_model = embedding_model
         self.regions: List[List[MemoryUnit]] = [[], []]
         self.region_tokens = [0, 0]
         self.region_full = [False, False]
@@ -155,6 +158,7 @@ class MemoryUnitPingPongBuffer:
         self.units: List[MemoryUnit] = []
         self.total_tokens = 0
         self.window_counter = 0
+        self.retriever = SimpleEmbeddingRetriever(embedding_model)
 
     def _unit_tokens(self, unit: MemoryUnit) -> int:
         return self.token_counter.count(unit.content)
@@ -162,6 +166,11 @@ class MemoryUnitPingPongBuffer:
     def _refresh_units(self):
         self.units = self.regions[0] + self.regions[1]
         self.total_tokens = sum(self.region_tokens)
+
+    def _rebuild_retriever(self):
+        self.retriever = SimpleEmbeddingRetriever(self.embedding_model)
+        if self.units:
+            self.retriever.add_documents([unit.content for unit in self.units])
 
     def add_units(self, units: List[MemoryUnit]):
         for unit in units:
@@ -194,6 +203,7 @@ class MemoryUnitPingPongBuffer:
                     "content_preview": _preview_text(unit.content),
                 },
             )
+        self._rebuild_retriever()
 
     def should_flush(self) -> bool:
         return self.pending_flush_region is not None
@@ -222,6 +232,7 @@ class MemoryUnitPingPongBuffer:
         self.pending_flush_region = None
         self.active_region = flush_region
         self._refresh_units()
+        self._rebuild_retriever()
         self.window_counter += 1
         self.trace_logger.log(
             "memory_unit_flush_region_cleared",
@@ -258,6 +269,7 @@ class MemoryUnitPingPongBuffer:
         self.active_region = 0
         self.pending_flush_region = None
         self._refresh_units()
+        self._rebuild_retriever()
         self.window_counter += 1
         self.trace_logger.log(
             "memory_unit_flush_remaining_cleared",
@@ -268,3 +280,31 @@ class MemoryUnitPingPongBuffer:
             },
         )
         return window_id, flush_units
+
+    def retrieve(self, query: str, k: int = 5) -> List[MemoryUnit]:
+        if not self.units:
+            return []
+        indices = self.retriever.search(query, k=min(k, len(self.units)))
+        return [self.units[idx] for idx in indices]
+
+    def format_for_prompt(self, units: List[MemoryUnit]) -> str:
+        if not units:
+            return "No structured working memory available."
+        lines = []
+        for unit in units:
+            source_turn_ids = ", ".join(unit.source_turn_ids)
+            metadata = []
+            if unit.topic:
+                metadata.append(f"topic={unit.topic}")
+            if unit.keywords:
+                metadata.append(f"keywords={', '.join(unit.keywords)}")
+            if unit.entities:
+                metadata.append(f"entities={', '.join(unit.entities)}")
+            metadata_text = f"\nmetadata: {'; '.join(metadata)}" if metadata else ""
+            lines.append(
+                f"memory unit id:{unit.unit_id}\n"
+                f"source turn ids:{source_turn_ids}\n"
+                f"memory unit content:\n{unit.content}"
+                f"{metadata_text}"
+            )
+        return "\n\n".join(lines)

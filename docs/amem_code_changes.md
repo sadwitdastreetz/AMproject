@@ -328,3 +328,41 @@ SimpleMem 对齐依据：
 - 本项目额外保留 `source_turn_ids`，用于 trace 和后续错误分析
 - 本项目不 fallback 到 sentence split，避免把旧 CR 特化变量混入新结构
 
+## 8. Three-layer retrieval adaptation
+
+主要文件：
+
+- `AgenticMemory/memory_window_buffers.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+背景：
+
+- 写入侧已经变成 `MemoryTurn -> MemoryUnit -> A-Mem archival`
+- 读取侧此前仍只读取 `Recent MemoryTurn` 和 `Archival A-Mem`
+- 中间的 `MemoryUnit` buffer 没有作为可检索存储介质进入 QA prompt
+
+改动：
+
+1. `MemoryUnitPingPongBuffer` 增加独立 embedding retriever
+   - `retrieve(query, k)`
+   - `format_for_prompt(units)`
+2. `answer()` 改成三段式检索：
+   - `Recent Turn Memory`
+   - `Structured Working Memory`
+   - `Archival Memory`
+3. prompt 优先级更新为：
+   - 优先使用 `Recent Turn Memory`
+   - 不足时使用 `Structured Working Memory`
+   - 再不足时使用 `Archival Memory`
+   - 冲突时按上述层级裁决
+4. `ingest_chunks()` 结束时不再强制 `flush_remaining()` 清空 `MemoryUnitPingPongBuffer`
+   - 剩余 raw turn window 仍会 decomposed 成 `MemoryUnit`
+   - 未达到二层 flush 条件的 `MemoryUnit` 保留为 structured working memory
+5. 结果 JSON 增加 `working_unit_context`
+
+当前语义：
+
+- `MemoryTurn` 是高保真最近原文层
+- `MemoryUnit` 是结构化工作记忆层
+- `A-Mem archival note` 是长期归档层
+

@@ -1498,3 +1498,42 @@ SimpleMem 核对结果：
 
 - 本轮只确认结构链路和 SimpleMem 对齐，不代表方法效果已经验证
 - 下一步如果继续实验，应优先跑一个非常小的在线 smoke，再决定是否进入 LongMemEval 或 MemoryAgentBench 的正式对照
+
+## 2026-04-13 - Structure update: three-layer retrieval adaptation
+
+类型：
+
+- 检索层适配
+- 未新增 benchmark 分数
+
+背景：
+
+- 用户指出当前系统已经是 `MemoryTurn -> MemoryUnit -> A-Mem archival` 三级存储
+- 但读取侧此前只拼接 `Recent Memory` 与 `Archival Memory`
+- `MemoryUnit` 层没有作为独立可检索上下文进入 QA
+
+代码更新：
+
+- `AgenticMemory/memory_window_buffers.py`
+  - `MemoryUnitPingPongBuffer` 新增 embedding retriever
+  - 新增 `retrieve(query, k)`
+  - 新增 `format_for_prompt(units)`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+  - `answer()` 增加 `Structured Working Memory` 检索区块
+  - QA prompt 优先级调整为 `Recent Turn Memory > Structured Working Memory > Archival Memory`
+  - `ingest_chunks()` 末尾不再强制把剩余 MemoryUnit 清空归档
+  - result JSON 增加 `working_unit_context`
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\memory_window_buffers.py AgenticMemory\memoryagentbench_cr_runner.py`
+- 已运行 `conda run -n amem310 python AgenticMemory\memoryagentbench_cr_runner.py --help`
+- 已运行离线 mock smoke test：
+  - monkeypatch `SimpleEmbeddingRetriever`
+  - `MemoryUnitPingPongBuffer.add_units()` 后可检索指定 MemoryUnit
+  - `format_for_prompt()` 输出 `memory unit id`, `source turn ids`, `memory unit content`
+
+当前判断：
+
+- 本轮只是把 retrieval 语义补齐，不代表效果已经验证
+- 后续在线 smoke / benchmark 必须检查 `working_unit_context` 是否真的包含未归档的结构化 MemoryUnit

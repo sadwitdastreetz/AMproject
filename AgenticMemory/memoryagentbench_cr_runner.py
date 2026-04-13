@@ -79,6 +79,7 @@ class AMemConflictResolutionAgent:
         )
         self.memory_unit_buffer = MemoryUnitPingPongBuffer(
             token_budget=memory_unit_token_budget,
+            embedding_model=embedding_model,
             trace_path=window_trace_path,
         )
         self.enable_topic_regrouping = enable_topic_regrouping
@@ -168,7 +169,7 @@ class AMemConflictResolutionAgent:
             while self.memory_unit_buffer.should_flush():
                 self._flush_memory_unit_window()
 
-    def _process_remaining_windows(self):
+    def _process_remaining_raw_turn_window(self):
         if self.raw_turn_window.turns:
             raw_window = self.raw_turn_window.pop_remaining()
             memory_units = self.memory_unit_decomposer.decompose_window(
@@ -187,8 +188,8 @@ class AMemConflictResolutionAgent:
                 }
             )
             self.memory_unit_buffer.add_units(memory_units)
-        window_id, memory_units = self.memory_unit_buffer.flush_remaining()
-        self._archive_memory_unit_window(window_id, memory_units)
+            while self.memory_unit_buffer.should_flush():
+                self._flush_memory_unit_window()
 
     def ingest_chunks(self, context: str, chunk_size: int):
         chunks = chunk_text_into_sentences(context, chunk_size=chunk_size)
@@ -206,7 +207,7 @@ class AMemConflictResolutionAgent:
                 self.recent_memory.flush_window()
             self.raw_turn_window.add_turn(turn)
             self._process_raw_turn_windows()
-        self._process_remaining_windows()
+        self._process_remaining_raw_turn_window()
         return chunks
 
     def generate_query_terms(self, question: str) -> str:
@@ -222,22 +223,27 @@ Keywords:"""
         query_terms = self.generate_query_terms(question)
         recent_turns = self.recent_memory.retrieve(query_terms, k=self.recent_k)
         recent_context = self.recent_memory.format_for_prompt(recent_turns)
+        working_units = self.memory_unit_buffer.retrieve(query_terms, k=self.recent_k)
+        working_unit_context = self.memory_unit_buffer.format_for_prompt(working_units)
         raw_context, _ = self.memory_system.find_related_memories(query_terms, k=self.retrieve_k)
         user_prompt = self.query_template.format(question=question)
         priority_instruction = (
-            "Use the Recent Memory section as the primary source of truth. "
-            "If Recent Memory and Archival Memory conflict, prefer the newer fact from Recent Memory. "
-            "If Recent Memory is insufficient, then use Archival Memory. "
+            "Use the Recent Turn Memory section as the primary source of truth. "
+            "If Recent Turn Memory is insufficient, use Structured Working Memory. "
+            "If both recent layers are insufficient, use Archival Memory. "
+            "If these memory layers conflict, prefer the newer/higher-priority layer in this order: "
+            "Recent Turn Memory, then Structured Working Memory, then Archival Memory. "
             "Do not use real-world knowledge outside the provided memory."
         )
         full_prompt = (
             f"{user_prompt}\n\n"
             f"{priority_instruction}\n\n"
-            f"Recent Memory:\n{recent_context}\n\n"
+            f"Recent Turn Memory:\n{recent_context}\n\n"
+            f"Structured Working Memory:\n{working_unit_context}\n\n"
             f"Archival Memory:\n{raw_context}"
         )
         response = self.answer_llm.llm.get_completion(full_prompt)
-        return response, recent_context, raw_context, query_terms, full_prompt
+        return response, recent_context, working_unit_context, raw_context, query_terms, full_prompt
 
 
 def evaluate_predictions(prediction: str, answers):
@@ -321,7 +327,7 @@ def main():
             row["metadata"].get("qa_pair_ids", [])[: args.max_questions],
         )
     ):
-        prediction, recent_context, raw_context, query_terms, full_prompt = agent.answer(question)
+        prediction, recent_context, working_unit_context, raw_context, query_terms, full_prompt = agent.answer(question)
         parsed_prediction, metrics = evaluate_predictions(prediction, answers)
         for key, value in metrics.items():
             metric_totals.setdefault(key, []).append(float(value))
@@ -336,6 +342,7 @@ def main():
                 "prediction_parsed": parsed_prediction,
                 "query_terms": query_terms,
                 "recent_context": recent_context,
+                "working_unit_context": working_unit_context,
                 "raw_context": raw_context,
                 "metrics": metrics,
                 "prompt": full_prompt,

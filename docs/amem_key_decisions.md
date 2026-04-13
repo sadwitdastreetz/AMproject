@@ -675,3 +675,32 @@ profiling 观察：
 - 这次修正把“自然对话窗口式压缩”和“CR 单 chunk 长事实输入”统一到了同一个 raw turn window 抽象里。
 - `MemoryUnit` 是后续 topic regrouping 的输入单位，但 topic regrouping 是否成立仍未收口，需要后续实验继续验证。
 - 当前提交是结构修正，不应被解释为方法效果已经改善。
+
+## 34. 关于三级存储检索层适配的决定
+
+当前新增决策：
+
+1. 写入侧已经形成三级结构：
+   - `MemoryTurn`
+   - `MemoryUnit`
+   - `A-Mem archival note`
+2. 检索侧必须同步改为三段式读取，否则 `MemoryUnit` 层只参与写入，不参与回答。
+3. QA prompt 中固定展示：
+   - `Recent Turn Memory`
+   - `Structured Working Memory`
+   - `Archival Memory`
+4. 冲突裁决优先级固定为：
+   - `Recent Turn Memory`
+   - `Structured Working Memory`
+   - `Archival Memory`
+5. `MemoryUnitPingPongBuffer` 不只是 flush 队列，也是尚未归档的 structured working memory。
+6. `ingest_chunks()` 结束时不再强制把剩余 `MemoryUnit` 全部 `flush_remaining()` 到 A-Mem：
+   - 已达到二层 flush 条件的 MemoryUnit window 仍会归档
+   - 未达到 flush 条件的 MemoryUnit 保留在 working memory 层
+7. result JSON 需要保留 `working_unit_context`，用于后续逐题分析。
+
+当前判断：
+
+- 这一步让结构与 retrieval 语义对齐。
+- 对 batch benchmark 来说，未归档的尾部 MemoryUnit 会通过 structured working memory 被读取；对在线场景来说，这更接近真实短期/工作记忆生命周期。
+- 后续要注意它会改变“全部写入 A-Mem 后再 QA”的假设，因此实验报告必须记录是否启用三级检索。
