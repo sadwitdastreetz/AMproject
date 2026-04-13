@@ -45,6 +45,8 @@ class AMemConflictResolutionAgent:
         raw_window_token_budget: int = 4096,
         raw_window_overlap_size: int = 2,
         memory_unit_token_budget: int = 4096,
+        memory_unit_max_output_tokens: int = 12000,
+        memory_unit_repair_output_tokens: int = 12000,
         recent_k: int = 5,
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
@@ -92,6 +94,8 @@ class AMemConflictResolutionAgent:
         self.memory_unit_decomposer = MemoryUnitDecomposer(
             llm_controller=self.retriever_llm,
             trace_path=unit_trace_path,
+            max_output_tokens=memory_unit_max_output_tokens,
+            repair_max_output_tokens=memory_unit_repair_output_tokens,
         )
         self.embedding_model = embedding_model
         self.source_name = ""
@@ -288,6 +292,8 @@ def main():
     parser.add_argument("--raw-window-token-budget", type=int, default=4096)
     parser.add_argument("--raw-window-overlap-size", type=int, default=2)
     parser.add_argument("--memory-unit-token-budget", type=int, default=4096)
+    parser.add_argument("--memory-unit-max-output-tokens", type=int, default=12000)
+    parser.add_argument("--memory-unit-repair-output-tokens", type=int, default=12000)
     parser.add_argument("--recent-k", type=int, default=5)
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
@@ -310,6 +316,8 @@ def main():
         raw_window_token_budget=args.raw_window_token_budget,
         raw_window_overlap_size=args.raw_window_overlap_size,
         memory_unit_token_budget=args.memory_unit_token_budget,
+        memory_unit_max_output_tokens=args.memory_unit_max_output_tokens,
+        memory_unit_repair_output_tokens=args.memory_unit_repair_output_tokens,
         recent_k=args.recent_k,
         enable_topic_regrouping=args.enable_topic_regrouping,
         regroup_similarity_threshold=args.regroup_similarity_threshold,
@@ -368,6 +376,8 @@ def main():
         "raw_window_overlap_size": args.raw_window_overlap_size,
         "memory_unit_token_budget": args.memory_unit_token_budget,
         "memory_unit_region_size": agent.memory_unit_buffer.region_size,
+        "memory_unit_max_output_tokens": args.memory_unit_max_output_tokens,
+        "memory_unit_repair_output_tokens": args.memory_unit_repair_output_tokens,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
         "trace_path": args.trace_path,
         "recent_trace_path": args.recent_trace_path,

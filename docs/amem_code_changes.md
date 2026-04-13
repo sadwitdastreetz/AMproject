@@ -366,3 +366,43 @@ SimpleMem 对齐依据：
 - `MemoryUnit` 是结构化工作记忆层
 - `A-Mem archival note` 是长期归档层
 
+## 9. MemoryUnit JSON output reliability fix
+
+主要文件：
+
+- `AgenticMemory/memory_layer_robust.py`
+- `AgenticMemory/memory_unit_decomposer.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+背景：
+
+- `FactConsolidation_sh_6k` 默认参数 smoke 中，两个 raw windows 的 MemoryUnit decomposition 都发生 JSON parse failure
+- 根因之一是 `RobustOpenAIController` 对 GPT-5 系列固定 `max_completion_tokens=1000`
+- Window-level extraction 需要输出 JSON array，1000 tokens 很容易截断，导致半截 JSON 无法解析
+
+改动：
+
+1. `RobustBaseLLMController.get_completion()` 支持可选 `max_output_tokens`
+2. OpenAI / Ollama / SGLang / vLLM / LiteLLM controller 都透传该参数
+3. `MemoryUnitDecomposer` 默认使用：
+   - `max_output_tokens=12000`
+   - `repair_max_output_tokens=12000`
+4. JSON parse 失败时新增显式 repair retry
+   - 不 fallback 到 sentence split
+   - 不 silent fallback
+   - repair 成功/失败写入 unit trace
+5. Decomposition trace 增加：
+   - `raw_response_chars`
+   - `repair_used`
+   - `initial_parse_error`
+   - `repair_response_preview`
+   - `repair_response_chars`
+6. CR runner 暴露参数：
+   - `--memory-unit-max-output-tokens`
+   - `--memory-unit-repair-output-tokens`
+
+当前判断：
+
+- 这解决的是“JSON 截断/破损导致 MemoryUnit 层为空”的工程问题
+- 但不等于解决“长 window 内所有 facts 是否完整抽取”的科研问题
+

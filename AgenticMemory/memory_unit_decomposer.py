@@ -103,9 +103,17 @@ class MemoryUnit:
 
 
 class MemoryUnitDecomposer:
-    def __init__(self, llm_controller, trace_path: Optional[str] = None):
+    def __init__(
+        self,
+        llm_controller,
+        trace_path: Optional[str] = None,
+        max_output_tokens: int = 12000,
+        repair_max_output_tokens: int = 12000,
+    ):
         self.llm_controller = llm_controller
         self.trace_logger = MemoryUnitTraceLogger(trace_path)
+        self.max_output_tokens = max_output_tokens
+        self.repair_max_output_tokens = repair_max_output_tokens
 
     def _format_turns(self, turns: Sequence[MemoryTurn]) -> str:
         formatted = []
@@ -125,6 +133,8 @@ Rules:
 - Return a JSON array only. Do not add markdown or commentary.
 - A turn window may contain zero, one, or many memory units.
 - Extract every useful stable fact, preference, event, constraint, relationship, plan, or state change.
+- For numbered fact lists, create one memory unit for each numbered fact. Do not summarize across multiple numbered facts.
+- Do not stop after examples; continue until all recoverable facts in the window are covered.
 - Ignore pure greetings, acknowledgements, and empty boilerplate.
 - Each memory unit must be independently understandable without pronouns like "it", "this", "he", "she", or "they" unless the referent is explicit.
 - Preserve benchmark facts exactly when the input is a numbered fact list. Do not correct facts using real-world knowledge.
@@ -153,6 +163,53 @@ Current window turns:
     def _build_prompt(self, turn: MemoryTurn) -> str:
         return self._build_window_prompt([turn])
 
+    def _get_completion(self, prompt: str, temperature: float, max_output_tokens: int) -> str:
+        try:
+            return self.llm_controller.llm.get_completion(
+                prompt,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+            )
+        except TypeError:
+            return self.llm_controller.llm.get_completion(prompt, temperature=temperature)
+
+    def _build_repair_prompt(self, malformed_json: str) -> str:
+        return f"""Repair the following malformed JSON output into a valid JSON array.
+
+Rules:
+- Return a JSON array only.
+- Do not add markdown or commentary.
+- Preserve every object and field that can be recovered.
+- If the final object is incomplete, drop only that incomplete final object.
+- Do not invent new memory units.
+
+Malformed JSON:
+{malformed_json}
+"""
+
+    def _parse_with_repair(self, raw_response: str, window_id: str) -> tuple[List[Dict[str, Any]], bool, str, str]:
+        try:
+            return _extract_json_array(raw_response), False, "", ""
+        except Exception as parse_exc:
+            repair_prompt = self._build_repair_prompt(raw_response)
+            repair_response = self._get_completion(
+                repair_prompt,
+                temperature=0.0,
+                max_output_tokens=self.repair_max_output_tokens,
+            )
+            parsed_items = _extract_json_array(repair_response)
+            self.trace_logger.log(
+                "memory_unit_decomposition_repaired",
+                {
+                    "window_id": window_id,
+                    "initial_error": str(parse_exc),
+                    "raw_response_preview": _preview_text(raw_response),
+                    "repair_response_preview": _preview_text(repair_response),
+                    "repaired_item_count": len(parsed_items),
+                },
+            )
+            return parsed_items, True, str(parse_exc), repair_response
+
     def decompose(self, turn: MemoryTurn, window_id: str = "") -> List[MemoryUnit]:
         return self.decompose_window(window_id=window_id, turns=[turn])
 
@@ -164,8 +221,12 @@ Current window turns:
         source_timestamp = turns[0].timestamp if turns else ""
         turn_by_id = {turn.turn_id: turn for turn in turns}
         try:
-            raw_response = self.llm_controller.llm.get_completion(prompt, temperature=0.0)
-            parsed_items = _extract_json_array(raw_response)
+            raw_response = self._get_completion(
+                prompt,
+                temperature=0.0,
+                max_output_tokens=self.max_output_tokens,
+            )
+            parsed_items, repair_used, initial_parse_error, repair_response = self._parse_with_repair(raw_response, window_id)
             units: List[MemoryUnit] = []
             for idx, item in enumerate(parsed_items):
                 content = _as_optional_str(item.get("content") or item.get("lossless_restatement"))
@@ -203,6 +264,11 @@ Current window turns:
                     "timestamp": source_timestamp,
                     "raw_context_preview": _preview_text(self._format_turns(turns)),
                     "raw_response_preview": _preview_text(raw_response),
+                    "raw_response_chars": len(raw_response or ""),
+                    "repair_used": repair_used,
+                    "initial_parse_error": initial_parse_error,
+                    "repair_response_preview": _preview_text(repair_response),
+                    "repair_response_chars": len(repair_response or ""),
                     "parse_success": True,
                     "memory_unit_count": len(units),
                     "latency_seconds": time.perf_counter() - start_time,
@@ -222,6 +288,7 @@ Current window turns:
                     "timestamp": source_timestamp,
                     "raw_context_preview": _preview_text(self._format_turns(turns)),
                     "raw_response_preview": _preview_text(raw_response),
+                    "raw_response_chars": len(raw_response or ""),
                     "parse_success": False,
                     "error": str(exc),
                     "latency_seconds": time.perf_counter() - start_time,

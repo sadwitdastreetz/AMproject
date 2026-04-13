@@ -1600,3 +1600,87 @@ SimpleMem 核对结果：
   - 更严格的 structured output / JSON schema
   - 更小的 raw window token budget
   - 或者分批 extraction + repair，但不能 silent fallback 到 sentence split
+
+## 2026-04-13 - Fix and smoke: MemoryUnit JSON output reliability
+
+类型：
+
+- 工程修复
+- 在线 smoke
+- 非正式 benchmark 结论
+
+背景：
+
+- 上一次 `FactConsolidation_sh_6k` 默认参数前 20 问 smoke 中，两个 raw windows 都发生 JSON parse failure
+- 进一步检查发现 `RobustOpenAIController` 对 GPT-5 系列固定 `max_completion_tokens=1000`
+- Window-level MemoryUnit extraction 输出 JSON array 时，1000 tokens 容易截断输出，造成半截 JSON
+
+代码修复：
+
+- `get_completion()` 新增 `max_output_tokens`
+- `MemoryUnitDecomposer` 默认 `max_output_tokens=12000`
+- parse 失败时新增显式 JSON repair retry
+- unit trace 记录 raw/repair response 长度与 repair 状态
+- runner 新增：
+  - `--memory-unit-max-output-tokens`
+  - `--memory-unit-repair-output-tokens`
+
+离线验证：
+
+- 已运行 `py_compile`
+- 已运行 mock 测试：
+  - 第一次返回 malformed JSON
+  - 第二次 repair 返回合法 JSON
+  - 最终成功生成 1 个 MemoryUnit
+  - 确认 max output tokens 被传入
+
+在线 smoke 1：
+
+- output: `results\20260413_repair_prompt_smoke_sh6k_chunk512_top1\result.json`
+- source: `factconsolidation_sh_6k`
+- chunk size: `512`
+- max questions: `1`
+- chunks ingested: `12`
+- raw windows: `2`
+- memory_unit_buffer_size: `98`
+- working_unit_context 非空
+- 两个 raw windows parse 成功
+- 第一个 window 生成 `62` 个 MemoryUnit
+- 第二个 window 生成 `36` 个 MemoryUnit
+
+在线 smoke 2：
+
+- output: `results\20260413_repair_prompt_sh6k_chunk512_top20\result.json`
+- source: `factconsolidation_sh_6k`
+- chunk size: `512`
+- max questions: `20`
+- chunks ingested: `12`
+- raw windows: `2`
+- flushes: `0`
+- archived_units: `0`
+- memory_unit_buffer_size: `179`
+- working_unit_context 空样本数: `0`
+- `exact_match = 0.6000`
+- `f1 = 0.6000`
+- `substring_exact_match = 0.6000`
+
+trace 诊断：
+
+- `raw_window_0000`
+  - turn_count: `8`
+  - window_token_count: `4345`
+  - memory_unit_count: `63`
+  - repair_used: `false`
+  - raw_response_chars: `23351`
+- `raw_window_0001_remaining`
+  - turn_count: `6`
+  - window_token_count: `3267`
+  - memory_unit_count: `116`
+  - repair_used: `true`
+  - raw_response_chars: `42474`
+
+当前判断：
+
+- JSON parse failure 已经解决到可运行状态。
+- 但这仍不是完整方法结论，因为 `flushes=0`、`archived_units=0`，当前主要验证的是 Recent Turn + Structured Working Memory。
+- MemoryUnit 覆盖率仍需单独评估：即使 parse 成功，window-level extraction 是否覆盖全部编号 facts 仍然不稳定。

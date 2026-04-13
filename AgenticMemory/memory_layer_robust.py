@@ -128,7 +128,12 @@ class RobustBaseLLMController(ABC):
     SYSTEM_MESSAGE = "Follow the format specified in the prompt exactly. Do not add extra commentary."
 
     @abstractmethod
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         """Get a plain-text completion from the LLM."""
         pass
 
@@ -164,7 +169,12 @@ class RobustOpenAIController(RobustBaseLLMController):
         self.client = OpenAI(**client_kwargs)
 
     @retry_llm_call(max_retries=2)
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         request_kwargs = {
             "model": self.model,
             "messages": [
@@ -173,11 +183,12 @@ class RobustOpenAIController(RobustBaseLLMController):
             ],
             "temperature": temperature,
         }
+        output_tokens = max_output_tokens or 1000
         # GPT-5 family rejects max_tokens and expects max_completion_tokens.
         if self.model.startswith("gpt-5"):
-            request_kwargs["max_completion_tokens"] = 1000
+            request_kwargs["max_completion_tokens"] = output_tokens
         else:
-            request_kwargs["max_tokens"] = 1000
+            request_kwargs["max_tokens"] = output_tokens
 
         response = self.client.chat.completions.create(**request_kwargs)
         return response.choices[0].message.content
@@ -190,7 +201,12 @@ class RobustOllamaController(RobustBaseLLMController):
         self.model = model
 
     @retry_llm_call(max_retries=2)
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         try:
             from ollama import chat
         except ImportError:
@@ -201,7 +217,10 @@ class RobustOllamaController(RobustBaseLLMController):
                 {"role": "system", "content": self.SYSTEM_MESSAGE},
                 {"role": "user", "content": prompt}
             ],
-            options={"temperature": temperature},
+            options={
+                "temperature": temperature,
+                "num_predict": max_output_tokens or 1000,
+            },
         )
         return response["message"]["content"]
 
@@ -216,12 +235,17 @@ class RobustSGLangController(RobustBaseLLMController):
         self.base_url = f"{sglang_host}:{sglang_port}"
 
     @retry_llm_call(max_retries=2)
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         payload = {
             "text": prompt,
             "sampling_params": {
                 "temperature": temperature,
-                "max_new_tokens": 1000,
+                "max_new_tokens": max_output_tokens or 1000,
             }
         }
         response = self._requests.post(
@@ -247,7 +271,12 @@ class RobustVLLMController(RobustBaseLLMController):
         self.base_url = f"{vllm_host}:{vllm_port}"
 
     @retry_llm_call(max_retries=2)
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": [
@@ -255,7 +284,7 @@ class RobustVLLMController(RobustBaseLLMController):
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            "max_tokens": 1000,
+            "max_tokens": max_output_tokens or 1000,
         }
         response = self._requests.post(
             f"{self.base_url}/v1/chat/completions",
@@ -280,7 +309,12 @@ class RobustLiteLLMController(RobustBaseLLMController):
         self.api_key = api_key or "EMPTY"
 
     @retry_llm_call(max_retries=2)
-    def get_completion(self, prompt: str, temperature: float = 0.7) -> str:
+    def get_completion(
+        self,
+        prompt: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+    ) -> str:
         completion_args = {
             "model": self.model,
             "messages": [
@@ -289,6 +323,8 @@ class RobustLiteLLMController(RobustBaseLLMController):
             ],
             "temperature": temperature,
         }
+        if max_output_tokens:
+            completion_args["max_tokens"] = max_output_tokens
         if self.api_base:
             completion_args["api_base"] = self.api_base
         if self.api_key:

@@ -730,3 +730,31 @@ profiling 观察：
 
 - 当前瓶颈不是 retrieval 层，而是 `RawMemoryTurnWindow -> List[MemoryUnit]` 的结构化生成可靠性。
 - `MemoryUnit` 层为空时，结果会退化为 Recent Turn Memory-only，不应与 baseline 或 Stage A/B 指标直接比较。
+
+## 36. 关于 MemoryUnit JSON 可靠性修复后的决定
+
+当前新增决策：
+
+1. `memory_unit_decomposition_failed` 的主要原因不是输入长度不够，而是输出侧 JSON 被截断或生成破损。
+2. 直接代码原因之一已经确认：
+   - GPT-5 系列 `get_completion()` 此前固定 `max_completion_tokens=1000`
+   - 对 window-level JSON array extraction 明显过小
+3. 当前修复策略：
+   - LLM controller 支持可选 `max_output_tokens`
+   - MemoryUnit extraction 默认 `max_output_tokens=12000`
+   - parse 失败时显式 repair retry
+   - repair 过程写 trace
+4. 继续坚持不 fallback 到 sentence split。
+5. 修复后 `FactConsolidation_sh_6k + chunk_size=512` 在线 smoke 已证明：
+   - parse failure 可消除
+   - `working_unit_context` 可以非空
+   - 但完整 fact 覆盖率仍需要单独评估
+
+当前判断：
+
+- JSON 可靠性是工程可修问题，已做第一版修复。
+- “一个 4096-token raw window 一次性抽完整 MemoryUnit list”仍是方法风险，后续可能需要：
+   - 更小 raw window token budget
+   - 分批 extraction
+   - coverage check / continuation protocol
+   - 或重新设计 MemoryUnit 生命周期
