@@ -1537,3 +1537,66 @@ SimpleMem 核对结果：
 
 - 本轮只是把 retrieval 语义补齐，不代表效果已经验证
 - 后续在线 smoke / benchmark 必须检查 `working_unit_context` 是否真的包含未归档的结构化 MemoryUnit
+
+## 2026-04-13 - Online smoke: FactConsolidation SH 6k default top20
+
+类型：
+
+- 在线 smoke
+- 失败诊断
+- 不作为有效方法指标
+
+运行配置：
+
+- runner: `AgenticMemory\memoryagentbench_cr_runner.py`
+- source: `factconsolidation_sh_6k`
+- model: `gpt-5.4-mini`
+- embedding model: `openai/text-embedding-3-small`
+- chunk size: runner 默认 `4096`
+- max questions: `20`
+- raw window size: 默认 `40`
+- raw window token budget: 默认 `4096`
+- raw window overlap size: 默认 `2`
+- memory unit token budget: 默认 `4096`
+- topic regrouping: 未启用
+- output: `results\20260413_simplemem_window_sh6k_default_top20\result.json`
+
+表面指标：
+
+- `exact_match = 0.3500`
+- `f1 = 0.3500`
+- `substring_exact_match = 0.3500`
+- `rougeL_f1 = 0.3500`
+
+诊断结果：
+
+- `chunks_ingested = 2`
+- `raw_window_history = 2`
+- `flush_history = 0`
+- `archived_units = 0`
+- `memory_unit_buffer_size = 0`
+- `working_unit_context = No structured working memory available.`
+- `raw_context` 为空，因为没有成功写入 A-Mem archival note
+
+关键失败点：
+
+- 两个 raw turn windows 都触发了 `memory_unit_decomposition_failed`
+- `raw_window_0000`
+  - `source_turn_ids = ["chunk_0000"]`
+  - `window_token_count = 4378`
+  - parse error: `Expecting ',' delimiter`
+  - memory unit count: `0`
+- `raw_window_0001_remaining`
+  - `source_turn_ids = ["chunk_0001"]`
+  - `window_token_count = 2156`
+  - parse error: `Expecting ',' delimiter`
+  - memory unit count: `0`
+
+当前判断：
+
+- 这次 run 只证明在线主链路能执行到 QA，不证明 SimpleMem-style MemoryUnit 方案有效。
+- 失败原因主要是 window-level LLM 输出 JSON 不稳定，导致 `MemoryUnit` 层为空。
+- 后续在正式实验前必须先解决 decomposition 输出可靠性：
+  - 更严格的 structured output / JSON schema
+  - 更小的 raw window token budget
+  - 或者分批 extraction + repair，但不能 silent fallback 到 sentence split

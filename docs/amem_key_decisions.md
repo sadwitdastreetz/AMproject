@@ -704,3 +704,29 @@ profiling 观察：
 - 这一步让结构与 retrieval 语义对齐。
 - 对 batch benchmark 来说，未归档的尾部 MemoryUnit 会通过 structured working memory 被读取；对在线场景来说，这更接近真实短期/工作记忆生命周期。
 - 后续要注意它会改变“全部写入 A-Mem 后再 QA”的假设，因此实验报告必须记录是否启用三级检索。
+
+## 35. 关于 MemoryUnit decomposition 可靠性的决定
+
+当前新增决策：
+
+1. `FactConsolidation_sh_6k` 默认参数前 20 问 smoke 已跑通程序链路，但不作为有效方法结果。
+2. 原因是两个 raw turn windows 的 LLM decomposition 都发生 JSON parse failure：
+   - `raw_window_0000` token count 约 `4378`
+   - `raw_window_0001_remaining` token count 约 `2156`
+3. parse failure 后当前策略是返回空 `MemoryUnit` list，不 fallback 到 sentence split。
+4. 该策略继续保留：
+   - silent fallback 会污染实验变量
+   - 空结果虽然难看，但能暴露真实结构问题
+5. 下一步在任何正式 benchmark 前，必须先解决 window-level MemoryUnit extraction 的结构化输出可靠性。
+
+当前候选修正方向：
+
+- 优先考虑 provider 支持的 structured output / JSON schema
+- 或者降低 raw window token budget，减少单次 JSON array 输出长度
+- 或者实现显式 JSON repair/retry，但需要记录 retry trace
+- 暂不恢复 sentence-level fallback
+
+当前判断：
+
+- 当前瓶颈不是 retrieval 层，而是 `RawMemoryTurnWindow -> List[MemoryUnit]` 的结构化生成可靠性。
+- `MemoryUnit` 层为空时，结果会退化为 Recent Turn Memory-only，不应与 baseline 或 Stage A/B 指标直接比较。
