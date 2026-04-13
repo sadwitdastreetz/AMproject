@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from datasets import load_dataset
@@ -26,6 +27,84 @@ for path in (BENCH_ROOT, BENCH_UTILS):
 
 from eval_other_utils import calculate_metrics, chunk_text_into_sentences, parse_output
 from templates import get_template
+
+
+def _write_trace_event(trace_path: str | None, event_type: str, payload: dict):
+    if not trace_path:
+        return
+    path = Path(trace_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "ts": datetime.now().isoformat(),
+        "event": event_type,
+        **payload,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _trace_paths_from_args(args) -> dict:
+    return {
+        "amem_update_trace_path": args.trace_path,
+        "recent_trace_path": args.recent_trace_path,
+        "group_trace_path": args.group_trace_path,
+        "unit_trace_path": args.unit_trace_path,
+        "window_trace_path": args.window_trace_path,
+    }
+
+
+def _build_run_config(args, output_path: Path, run_id: str) -> dict:
+    return {
+        "run_id": run_id,
+        "source": args.source,
+        "benchmark": "MemoryAgentBench/Conflict_Resolution",
+        "agent": "A-Mem SimpleMem-window MemoryUnit pipeline",
+        "memory_lifecycle": [
+            "MemoryTurn",
+            "RawMemoryTurnWindowBuffer",
+            "MemoryUnitDecomposer",
+            "MemoryUnitPingPongBuffer",
+            "TopicRegrouper or MemoryUnit archival",
+            "A-Mem Archival Memory",
+            "Recent + Structured Working + Archival retrieval",
+        ],
+        "backend": args.backend,
+        "model": args.model,
+        "embedding_model": args.embedding_model,
+        "openai_base_url": os.getenv("OPENAI_BASE_URL", ""),
+        "chunk_size": args.chunk_size,
+        "retrieve_k": args.retrieve_k,
+        "recent_k": args.recent_k,
+        "max_questions": args.max_questions,
+        "recent_token_budget": args.recent_token_budget,
+        "raw_window_size": args.raw_window_size,
+        "raw_window_token_budget": args.raw_window_token_budget,
+        "raw_window_overlap_size": args.raw_window_overlap_size,
+        "memory_unit_token_budget": args.memory_unit_token_budget,
+        "memory_unit_max_output_tokens": args.memory_unit_max_output_tokens,
+        "memory_unit_repair_output_tokens": args.memory_unit_repair_output_tokens,
+        "topic_regrouping_enabled": args.enable_topic_regrouping,
+        "regroup_similarity_threshold": args.regroup_similarity_threshold,
+        "regroup_min_cluster_size": args.regroup_min_cluster_size,
+        "memorize_template_key": "factconsolidation_sh_6k/memorize/Agentic_memory",
+        "query_template_key": "factconsolidation_sh_6k/query/Agentic_memory",
+        "output_path": str(output_path),
+        "trace_paths": _trace_paths_from_args(args),
+    }
+
+
+def _write_run_metadata_traces(run_config: dict):
+    trace_paths = run_config["trace_paths"]
+    for trace_name, trace_path in trace_paths.items():
+        _write_trace_event(
+            trace_path,
+            "run_metadata",
+            {
+                "trace_name": trace_name,
+                "run_id": run_config["run_id"],
+                "run_config": run_config,
+            },
+        )
 
 
 class AMemConflictResolutionAgent:
@@ -229,7 +308,20 @@ Keywords:"""
         recent_context = self.recent_memory.format_for_prompt(recent_turns)
         working_units = self.memory_unit_buffer.retrieve(query_terms, k=self.recent_k)
         working_unit_context = self.memory_unit_buffer.format_for_prompt(working_units)
-        raw_context, _ = self.memory_system.find_related_memories(query_terms, k=self.retrieve_k)
+        raw_context, archival_indices = self.memory_system.find_related_memories(query_terms, k=self.retrieve_k)
+        all_archival_memories = list(self.memory_system.memories.values())
+        archival_hits = []
+        for memory_index in archival_indices:
+            if 0 <= memory_index < len(all_archival_memories):
+                memory = all_archival_memories[memory_index]
+                archival_hits.append(
+                    {
+                        "index": memory_index,
+                        "note_id": memory.id,
+                        "timestamp": memory.timestamp,
+                        "content_preview": memory.content[:240],
+                    }
+                )
         user_prompt = self.query_template.format(question=question)
         priority_instruction = (
             "Use the Recent Turn Memory section as the primary source of truth. "
@@ -247,7 +339,30 @@ Keywords:"""
             f"Archival Memory:\n{raw_context}"
         )
         response = self.answer_llm.llm.get_completion(full_prompt)
-        return response, recent_context, working_unit_context, raw_context, query_terms, full_prompt
+        retrieval_metadata = {
+            "query_terms": query_terms,
+            "recent_turn_hits": [
+                {
+                    "turn_id": turn.turn_id,
+                    "source": turn.source,
+                    "timestamp": turn.timestamp,
+                    "token_count": turn.token_count,
+                }
+                for turn in recent_turns
+            ],
+            "working_unit_hits": [
+                {
+                    "unit_id": unit.unit_id,
+                    "source_turn_ids": unit.source_turn_ids,
+                    "timestamp": unit.timestamp,
+                    "topic": unit.topic,
+                    "keywords": unit.keywords,
+                }
+                for unit in working_units
+            ],
+            "archival_hits": archival_hits,
+        }
+        return response, recent_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata
 
 
 def evaluate_predictions(prediction: str, answers):
@@ -298,7 +413,13 @@ def main():
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
     parser.add_argument("--regroup-min-cluster-size", type=int, default=2)
+    parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
+
+    run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = Path(args.output)
+    run_config = _build_run_config(args, output_path, run_id)
+    _write_run_metadata_traces(run_config)
 
     row = load_conflict_resolution_row(args.source)
     agent = AMemConflictResolutionAgent(
@@ -335,7 +456,7 @@ def main():
             row["metadata"].get("qa_pair_ids", [])[: args.max_questions],
         )
     ):
-        prediction, recent_context, working_unit_context, raw_context, query_terms, full_prompt = agent.answer(question)
+        prediction, recent_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata = agent.answer(question)
         parsed_prediction, metrics = evaluate_predictions(prediction, answers)
         for key, value in metrics.items():
             metric_totals.setdefault(key, []).append(float(value))
@@ -349,6 +470,7 @@ def main():
                 "prediction_raw": prediction,
                 "prediction_parsed": parsed_prediction,
                 "query_terms": query_terms,
+                "retrieval_metadata": retrieval_metadata,
                 "recent_context": recent_context,
                 "working_unit_context": working_unit_context,
                 "raw_context": raw_context,
@@ -362,6 +484,8 @@ def main():
         for key, values in metric_totals.items()
     }
     payload = {
+        "run_id": run_id,
+        "run_config": run_config,
         "source": args.source,
         "embedding_model": agent.embedding_model,
         "backend": args.backend,
@@ -384,6 +508,7 @@ def main():
         "group_trace_path": args.group_trace_path,
         "unit_trace_path": args.unit_trace_path,
         "window_trace_path": args.window_trace_path,
+        "trace_paths": _trace_paths_from_args(args),
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,
@@ -395,12 +520,24 @@ def main():
         "raw_turn_window_buffer_tokens": agent.raw_turn_window.token_count,
         "memory_unit_buffer_size": len(agent.memory_unit_buffer.units),
         "memory_unit_buffer_tokens": agent.memory_unit_buffer.total_tokens,
+        "storage_summary": {
+            "chunks_ingested": len(chunks),
+            "recent_turn_buffer_size": len(agent.recent_memory.turns),
+            "recent_turn_buffer_tokens": agent.recent_memory.total_tokens,
+            "raw_turn_window_buffer_size": len(agent.raw_turn_window.turns),
+            "raw_turn_window_buffer_tokens": agent.raw_turn_window.token_count,
+            "memory_unit_buffer_size": len(agent.memory_unit_buffer.units),
+            "memory_unit_buffer_tokens": agent.memory_unit_buffer.total_tokens,
+            "archival_note_count": len(agent.memory_system.memories),
+            "archived_ids": agent.archived_chunk_ids,
+            "flush_count": len(agent.flush_history),
+        },
         "max_questions": args.max_questions,
         "summary": summary,
         "results": results,
     }
 
-    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"Saved results to {output_path.resolve()}")

@@ -406,3 +406,53 @@ SimpleMem 对齐依据：
 - 这解决的是“JSON 截断/破损导致 MemoryUnit 层为空”的工程问题
 - 但不等于解决“长 window 内所有 facts 是否完整抽取”的科研问题
 
+## 10. Trace and runtime parameter normalization
+
+主要文件：
+
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+背景：
+
+- result JSON 中虽然已有部分 flat 参数，但各 trace JSONL 文件缺少统一运行参数
+- 单独查看 `unit_trace` / `window_trace` / `recent_trace` 时，不容易判断对应哪组模型、chunk size、window/buffer 参数
+- 每题结果此前只有 context 文本，没有结构化记录 retrieval 命中的 ids
+
+改动：
+
+1. 新增 `--run-id`
+   - 未指定时使用当前时间生成
+2. 新增统一 `run_config`
+   - source / benchmark
+   - backend / model / embedding model
+   - `chunk_size`
+   - `retrieve_k` / `recent_k`
+   - recent token budget
+   - raw window size / token budget / overlap
+   - memory unit token budget
+   - memory unit max output / repair output tokens
+   - topic regrouping 参数
+   - trace paths
+   - output path
+3. 每个 trace JSONL 开头写入 `run_metadata`
+   - A-Mem update trace
+   - recent trace
+   - group trace
+   - unit trace
+   - window trace
+4. result JSON 增加结构化字段：
+   - `run_id`
+   - `run_config`
+   - `trace_paths`
+   - `storage_summary`
+5. 每题 result 增加 `retrieval_metadata`
+   - `recent_turn_hits`
+   - `working_unit_hits`
+   - `archival_hits`
+
+注意：
+
+- 旧实验结果不会 retroactively 拥有新的 `run_metadata`
+- 后续新实验应优先使用新版 trace/result 结构
+- `run_config` 不记录 API key，只记录 `OPENAI_BASE_URL`
+

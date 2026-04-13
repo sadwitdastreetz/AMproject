@@ -758,3 +758,36 @@ profiling 观察：
    - 分批 extraction
    - coverage check / continuation protocol
    - 或重新设计 MemoryUnit 生命周期
+
+## 37. 关于 trace 与运行时参数整理的决定
+
+当前新增决策：
+
+1. 之后每次实验必须有统一 `run_id`。
+2. result JSON 必须包含结构化 `run_config`，不能只依赖散落的 flat 参数。
+3. 每个 trace JSONL 文件开头必须写入 `run_metadata`：
+   - A-Mem update trace
+   - recent trace
+   - group trace
+   - unit trace
+   - window trace
+4. `run_config` 必须覆盖影响实验解释的关键参数：
+   - model / backend / embedding model
+   - chunk size
+   - recent / retrieve top-k
+   - recent buffer token budget
+   - raw window size / token budget / overlap
+   - memory unit buffer token budget
+   - memory unit extraction / repair output token budget
+   - topic regrouping 参数
+   - trace/output path
+5. 每题 result 必须记录 `retrieval_metadata`：
+   - recent turn hit ids
+   - structured working MemoryUnit hit ids
+   - archival A-Mem hit ids / indices
+6. `run_config` 不记录 API key，只允许记录 base URL 等非密钥环境信息。
+
+当前判断：
+
+- 这一步是为了保证后续实验可复现、可排查，而不是引入新的方法变量。
+- 旧结果文件不会自动补齐新版 metadata；后续新 run 才视为 trace 结构规范化后的结果。

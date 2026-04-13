@@ -1684,3 +1684,64 @@ trace 诊断：
 - JSON parse failure 已经解决到可运行状态。
 - 但这仍不是完整方法结论，因为 `flushes=0`、`archived_units=0`，当前主要验证的是 Recent Turn + Structured Working Memory。
 - MemoryUnit 覆盖率仍需单独评估：即使 parse 成功，window-level extraction 是否覆盖全部编号 facts 仍然不稳定。
+
+## 2026-04-13 - Trace/runtime parameter normalization
+
+类型：
+
+- 可观测性整理
+- 实验记录结构修正
+- 未新增 benchmark 分数
+
+背景：
+
+- 用户要求把 trace 和运行时参数整理清楚
+- 现有 result JSON 里有部分 flat 参数，但各 trace JSONL 单独打开时缺少完整运行上下文
+- 每题 result 缺少结构化 retrieval hit ids，只能靠 context 文本人工推断
+
+代码更新：
+
+- `memoryagentbench_cr_runner.py`
+  - 新增 `--run-id`
+  - 新增 `run_config`
+  - result JSON 新增 `run_id`, `run_config`, `trace_paths`, `storage_summary`
+  - 每个 trace JSONL 开头写入 `run_metadata`
+  - 每题 result 新增 `retrieval_metadata`
+
+新增记录内容：
+
+- `run_config`
+  - source / benchmark
+  - model / backend / embedding model
+  - chunk size
+  - retrieve/recent top-k
+  - recent buffer budget
+  - raw turn window size / token budget / overlap
+  - MemoryUnit buffer token budget
+  - MemoryUnit extraction / repair max output tokens
+  - topic regrouping 参数
+  - trace path / output path
+- `retrieval_metadata`
+  - `recent_turn_hits`
+  - `working_unit_hits`
+  - `archival_hits`
+- `storage_summary`
+  - recent turn buffer 状态
+  - raw turn window buffer 状态
+  - memory unit buffer 状态
+  - archival note 数量
+  - flush 数量
+
+验证：
+
+- 已运行 `py_compile`
+- 已运行 `memoryagentbench_cr_runner.py --help`，确认 `--run-id` 出现
+- 已运行离线 metadata 写入测试：
+  - 五类 trace 文件均写入首行 `run_metadata`
+  - `run_metadata.run_config.chunk_size = 512`
+  - trace metadata 不包含 API key
+
+当前判断：
+
+- 这是实验基础设施整理，不改变方法本身。
+- 后续正式 run 应使用新版结果结构；旧结果只作为历史记录保留。
