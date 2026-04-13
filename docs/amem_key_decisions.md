@@ -638,3 +638,40 @@ profiling 观察：
 - 这是比 `unitization_mode` 更清晰的通用抽象。
 - 该方案可以统一 CR 的 numbered facts 与 LongMemEval/LoCoMo 的自然 dialogue turn。
 - 后续需要用小规模实验观察 decomposition 漏事实、幻觉和额外 token 成本。
+
+## 33. 关于 SimpleMem-style window decomposition 的修正
+
+当前新增决策：
+
+1. 废弃“第一版 decomposition 单位固定为单个完整 `MemoryTurn`”这一临时理解。
+2. 重新对齐本地 SimpleMem text 版实现：
+   - `dialogue_buffer` 累积多个 turns
+   - 达到 `window_size` 后处理一个 turn window
+   - 处理后按 `step_size = window_size - overlap_size` 推进
+   - overlap turns 保留给下一个 window
+3. 本项目第一版 raw turn window 参数固定为：
+   - `window_size=40`
+   - `token_budget=4096`
+   - `overlap_size=2`
+4. `token_budget` 是本项目新增约束，不是 SimpleMem 原始 text 版默认设计：
+   - 用于处理 MemoryAgentBench CR 中一个 synthetic dialogue turn 可能就是一个 512-token chunk 的情况
+   - 触发条件为 turn 数或 token 数任一满足
+5. Memory 生命周期更新为：
+   - `MemoryTurn`
+   - `RawMemoryTurnWindowBuffer`
+   - `MemoryUnitDecomposer.decompose_window(...)`
+   - `MemoryUnitPingPongBuffer`
+   - `TopicRegrouper.regroup_units(...)`
+   - A-Mem archival note
+   - Recent + Archival dual retrieval
+6. 二层 ping-pong buffer 的对象明确改为 `MemoryUnit`，不是 `MemoryTurn`。
+7. SimpleMem 的 `MemoryEntry` 字段只作为语义结构参考：
+   - 保留 `lossless_restatement`, `keywords`, `timestamp`, `location`, `persons`, `entities`, `topic`
+   - 本项目额外加入 `source_turn_ids`，用于多 turn window 的可追踪性
+8. 本轮不引入 SimpleMem 的 LanceDB、BM25、hybrid retrieval、reflection retrieval。
+
+当前判断：
+
+- 这次修正把“自然对话窗口式压缩”和“CR 单 chunk 长事实输入”统一到了同一个 raw turn window 抽象里。
+- `MemoryUnit` 是后续 topic regrouping 的输入单位，但 topic regrouping 是否成立仍未收口，需要后续实验继续验证。
+- 当前提交是结构修正，不应被解释为方法效果已经改善。

@@ -275,3 +275,56 @@
 - API key 没有写入代码仓库
 - 环境变量通过运行环境提供
 
+## 7. SimpleMem-style raw turn window decomposition
+
+主要文件：
+
+- `AgenticMemory/memory_window_buffers.py`
+- `AgenticMemory/memory_unit_decomposer.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+本次修正：
+
+1. 新增 `RawMemoryTurnWindowBuffer`
+   - 保存 `List[MemoryTurn]`
+   - 默认 `window_size=40`
+   - 默认 `token_budget=4096`
+   - 默认 `overlap_size=2`
+   - 触发条件为 turn 数达到窗口大小，或 token 数达到预算
+   - 处理窗口后按 SimpleMem 风格保留 overlap turns
+2. 修改 `MemoryUnitDecomposer`
+   - 新增 `decompose_window(window_id, turns)`
+   - prompt 输入从单个 `MemoryTurn` 改为多个 dialogue turns
+   - 输出仍为 `List[MemoryUnit]`
+   - `MemoryUnit.source_turn_ids` 支持多个源 turn
+   - schema 借鉴 SimpleMem `MemoryEntry` 的 `lossless_restatement`, `keywords`, `timestamp`, `location`, `persons`, `entities`, `topic`
+3. 新增 `MemoryUnitPingPongBuffer`
+   - 二层 ping-pong buffer 存放 `List[MemoryUnit]`
+   - 默认总预算 `4096 token`
+   - 默认 region size 为预算的一半
+   - flush 输出较大的 `MemoryUnit` window，再进入 `TopicRegrouper.regroup_units()`
+4. 更新 CR runner 主线
+   - ingest 时仍先构造官方 benchmark synthetic dialogue `formatted_turn`
+   - `MemoryTurn` 进入 raw turn window
+   - raw window 触发后由 LLM 一次性抽取多个 `MemoryUnit`
+   - `MemoryUnit` 再进入二层 ping-pong buffer
+   - 二层 flush 后进行 topic regrouping 或直接 memory-unit archival
+   - 继续保留 Recent + Archival dual retrieval
+
+SimpleMem 对齐依据：
+
+- 已核对 `C:\Users\ddger\Documents\AMproject\refs\SimpleMem\core\memory_builder.py`
+- `dialogue_buffer` 使用 window 处理，而不是一次只处理一个 turn
+- `window = self.dialogue_buffer[:self.window_size]`
+- `self.dialogue_buffer = self.dialogue_buffer[self.step_size:]`
+- `step_size = max(1, window_size - overlap_size)`
+- 已核对 `config.py.example` 当前样例默认 `WINDOW_SIZE = 40`, `OVERLAP_SIZE = 2`
+- 已核对 `models\memory_entry.py` 的 `MemoryEntry` 字段
+
+本项目偏离点：
+
+- SimpleMem 只按 turn window 触发；本项目额外加入 `token_budget=4096`，用于兼容 MemoryAgentBench CR 这类单 turn/chunk 很长的输入
+- SimpleMem 写入 LanceDB/BM25/hybrid retrieval；本项目不引入这些 store，仍写入 A-Mem archival notes
+- 本项目额外保留 `source_turn_ids`，用于 trace 和后续错误分析
+- 本项目不 fallback 到 sentence split，避免把旧 CR 特化变量混入新结构
+

@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from short_term_memory import MemoryTurn
 
@@ -107,42 +107,62 @@ class MemoryUnitDecomposer:
         self.llm_controller = llm_controller
         self.trace_logger = MemoryUnitTraceLogger(trace_path)
 
-    def _build_prompt(self, turn: MemoryTurn) -> str:
-        return f"""You transform one memory turn into self-contained memory units.
+    def _format_turns(self, turns: Sequence[MemoryTurn]) -> str:
+        formatted = []
+        for turn in turns:
+            formatted.append(
+                f"[{turn.timestamp}] {turn.turn_id} ({turn.source})\n{turn.raw_context}"
+            )
+        return "\n\n".join(formatted)
+
+    def _build_window_prompt(self, turns: Sequence[MemoryTurn]) -> str:
+        turn_text = self._format_turns(turns)
+        source_turn_ids = [turn.turn_id for turn in turns]
+        timestamp_hint = turns[0].timestamp if turns else None
+        return f"""You transform a window of dialogue turns into self-contained memory units.
 
 Rules:
 - Return a JSON array only. Do not add markdown or commentary.
-- A single turn may contain zero, one, or many memory units.
+- A turn window may contain zero, one, or many memory units.
 - Extract every useful stable fact, preference, event, constraint, relationship, plan, or state change.
 - Ignore pure greetings, acknowledgements, and empty boilerplate.
 - Each memory unit must be independently understandable without pronouns like "it", "this", "he", "she", or "they" unless the referent is explicit.
 - Preserve benchmark facts exactly when the input is a numbered fact list. Do not correct facts using real-world knowledge.
 - Use the provided timestamp/source when no better time is stated.
+- This follows the SimpleMem MemoryEntry idea: lossless, self-contained restatements with keywords and symbolic metadata.
 
 Return each object with this schema:
 {{
-  "content": "self-contained factual memory sentence",
+  "lossless_restatement": "self-contained factual memory sentence",
   "keywords": ["keyword"],
-  "timestamp": "{turn.timestamp}",
+  "timestamp": "{timestamp_hint}",
   "location": null,
   "persons": [],
   "entities": [],
   "topic": null,
+  "source_turn_ids": ["turn id"],
   "confidence": 0.0
 }}
 
-Turn id: {turn.turn_id}
-Source: {turn.source}
-Timestamp: {turn.timestamp}
+Source turn ids: {json.dumps(source_turn_ids, ensure_ascii=False)}
 
-Raw turn content:
-{turn.raw_context}
+Current window turns:
+{turn_text}
 """
 
+    def _build_prompt(self, turn: MemoryTurn) -> str:
+        return self._build_window_prompt([turn])
+
     def decompose(self, turn: MemoryTurn, window_id: str = "") -> List[MemoryUnit]:
-        prompt = self._build_prompt(turn)
+        return self.decompose_window(window_id=window_id, turns=[turn])
+
+    def decompose_window(self, window_id: str, turns: Sequence[MemoryTurn]) -> List[MemoryUnit]:
+        prompt = self._build_window_prompt(turns)
         start_time = time.perf_counter()
         raw_response = ""
+        source_turn_ids = [turn.turn_id for turn in turns]
+        source_timestamp = turns[0].timestamp if turns else ""
+        turn_by_id = {turn.turn_id: turn for turn in turns}
         try:
             raw_response = self.llm_controller.llm.get_completion(prompt, temperature=0.0)
             parsed_items = _extract_json_array(raw_response)
@@ -151,20 +171,24 @@ Raw turn content:
                 content = _as_optional_str(item.get("content") or item.get("lossless_restatement"))
                 if not content:
                     continue
-                unit_id = f"{turn.turn_id}_unit_{idx:02d}"
+                item_source_turn_ids = _as_list(item.get("source_turn_ids")) or source_turn_ids
+                item_source_turn_ids = [turn_id for turn_id in item_source_turn_ids if turn_id in turn_by_id] or source_turn_ids
+                primary_source_turn_id = item_source_turn_ids[0] if item_source_turn_ids else (source_turn_ids[0] if source_turn_ids else "")
+                primary_turn = turn_by_id.get(primary_source_turn_id)
+                unit_id = f"{window_id or primary_source_turn_id}_unit_{idx:02d}"
                 units.append(
                     MemoryUnit(
                         unit_id=unit_id,
                         content=content,
                         keywords=_as_list(item.get("keywords")),
-                        timestamp=_as_optional_str(item.get("timestamp")) or turn.timestamp,
+                        timestamp=_as_optional_str(item.get("timestamp")) or (primary_turn.timestamp if primary_turn else source_timestamp),
                         location=_as_optional_str(item.get("location")),
                         persons=_as_list(item.get("persons")),
                         entities=_as_list(item.get("entities")),
                         topic=_as_optional_str(item.get("topic")),
-                        source_turn_ids=[turn.turn_id],
-                        source_turn_id=turn.turn_id,
-                        source_timestamp=turn.timestamp,
+                        source_turn_ids=item_source_turn_ids,
+                        source_turn_id=primary_source_turn_id,
+                        source_timestamp=primary_turn.timestamp if primary_turn else source_timestamp,
                         confidence=_as_optional_float(item.get("confidence")),
                     )
                 )
@@ -172,10 +196,12 @@ Raw turn content:
                 "memory_unit_decomposition_complete",
                 {
                     "window_id": window_id,
-                    "turn_id": turn.turn_id,
-                    "source": turn.source,
-                    "timestamp": turn.timestamp,
-                    "raw_context_preview": _preview_text(turn.raw_context),
+                    "source_turn_ids": source_turn_ids,
+                    "turn_count": len(turns),
+                    "window_token_count": sum(turn.token_count for turn in turns),
+                    "source": turns[0].source if turns else "",
+                    "timestamp": source_timestamp,
+                    "raw_context_preview": _preview_text(self._format_turns(turns)),
                     "raw_response_preview": _preview_text(raw_response),
                     "parse_success": True,
                     "memory_unit_count": len(units),
@@ -189,10 +215,12 @@ Raw turn content:
                 "memory_unit_decomposition_failed",
                 {
                     "window_id": window_id,
-                    "turn_id": turn.turn_id,
-                    "source": turn.source,
-                    "timestamp": turn.timestamp,
-                    "raw_context_preview": _preview_text(turn.raw_context),
+                    "source_turn_ids": source_turn_ids,
+                    "turn_count": len(turns),
+                    "window_token_count": sum(turn.token_count for turn in turns),
+                    "source": turns[0].source if turns else "",
+                    "timestamp": source_timestamp,
+                    "raw_context_preview": _preview_text(self._format_turns(turns)),
                     "raw_response_preview": _preview_text(raw_response),
                     "parse_success": False,
                     "error": str(exc),

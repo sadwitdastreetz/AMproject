@@ -1431,3 +1431,70 @@ Stage B FIFO sliding buffer：
 - 当前只完成结构接线，不等同于完成实验验证
 - 下一步应跑 CR 小规模 smoke，再跑前 50 问对照
 - 需要重点观察 decomposition 是否漏事实、是否引入幻觉、以及 LLM 调用成本
+
+## 2026-04-13 - Structure update: SimpleMem-style raw turn window decomposition
+
+类型：
+
+- 结构接线
+- SimpleMem 对齐修正
+- 未新增 benchmark 分数
+
+背景：
+
+- 用户指出 SimpleMem text 版不是“一次压缩一个 MemoryTurn”，而是 `dialogue_buffer` 累积多个 turns 后做 window-level memory extraction
+- 本轮要求所有借鉴 SimpleMem 的部分先与本地 `refs\SimpleMem` 代码核对
+- 目标是把流程改为 `MemoryTurn -> raw turn window -> List[MemoryUnit] -> MemoryUnit ping-pong -> topic regrouping -> A-Mem archival`
+
+SimpleMem 核对结果：
+
+- 已核对 `C:\Users\ddger\Documents\AMproject\refs\SimpleMem\core\memory_builder.py`
+- `window_size = window_size or config.WINDOW_SIZE`
+- `overlap_size = getattr(config, 'OVERLAP_SIZE', 0)`
+- `step_size = max(1, self.window_size - self.overlap_size)`
+- `window = self.dialogue_buffer[:self.window_size]`
+- `self.dialogue_buffer = self.dialogue_buffer[self.step_size:]`
+- 已核对 `config.py.example` 当前样例默认 `WINDOW_SIZE = 40`, `OVERLAP_SIZE = 2`
+- 已核对 `models\memory_entry.py` 字段：`lossless_restatement`, `keywords`, `timestamp`, `location`, `persons`, `entities`, `topic`
+
+代码更新：
+
+- 新增 `AgenticMemory/memory_window_buffers.py`
+  - `RawMemoryTurnWindowBuffer`
+  - `MemoryUnitPingPongBuffer`
+  - `WindowTraceLogger`
+- 修改 `AgenticMemory/memory_unit_decomposer.py`
+  - 新增 `decompose_window(window_id, turns)`
+  - prompt 输入变为多个 dialogue turns
+  - trace 记录 `window_id`, `source_turn_ids`, `turn_count`, `window_token_count`, raw response preview, parsed units, parse failure
+  - `MemoryUnit.source_turn_ids` 支持多个源 turn
+- 修改 `AgenticMemory/memoryagentbench_cr_runner.py`
+  - 新增 raw turn window 参数
+  - 新增 memory unit ping-pong 参数
+  - 新增 `--window-trace-path`
+  - ingest 主线改为 raw turn window 触发后再抽取 MemoryUnit
+  - 二层 MemoryUnit ping-pong flush 后再进入 `TopicRegrouper.regroup_units()`
+
+本项目偏离点：
+
+- SimpleMem 原始窗口主要由 turn 数触发；本项目额外加入 `token_budget=4096`
+- SimpleMem 后端不迁移，本项目仍使用 A-Mem archival notes
+- 本项目额外保留 `source_turn_ids`，用于多 turn window 的 trace 回溯
+- 不 fallback 到 sentence split
+
+验证：
+
+- 已运行 `conda run -n amem310 python -m py_compile AgenticMemory\memory_window_buffers.py AgenticMemory\memory_unit_decomposer.py AgenticMemory\topic_regrouper.py AgenticMemory\memoryagentbench_cr_runner.py`
+- 已运行 `conda run -n amem310 python AgenticMemory\memoryagentbench_cr_runner.py --help`
+- 已运行离线 mock smoke test：
+  - 40 个短 `MemoryTurn` 触发 raw window
+  - 处理后保留最后 2 个 overlap turns
+  - 长 `MemoryTurn` 累计达到 token budget 后触发 raw window
+  - mock LLM 从一个 window 生成 2 个 `MemoryUnit`
+  - `MemoryUnitPingPongBuffer.flush_remaining()` 正常输出 unit window
+  - mock embedding 下 `TopicRegrouper.regroup_units()` 能消费 `MemoryUnit` 并输出 topic groups
+
+当前判断：
+
+- 本轮只确认结构链路和 SimpleMem 对齐，不代表方法效果已经验证
+- 下一步如果继续实验，应优先跑一个非常小的在线 smoke，再决定是否进入 LongMemEval 或 MemoryAgentBench 的正式对照

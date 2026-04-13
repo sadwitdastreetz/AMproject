@@ -9,6 +9,7 @@ from datasets import load_dataset
 from memory_layer import DEFAULT_EMBEDDING_MODEL
 from memory_layer_robust import RobustAgenticMemorySystem, RobustLLMController
 from memory_unit_decomposer import MemoryUnitDecomposer
+from memory_window_buffers import MemoryUnitPingPongBuffer, RawMemoryTurnWindowBuffer
 from short_term_memory import ShortTermMemoryBuffer
 from test_advanced_robust import parse_plain_text_answer
 from topic_regrouper import TopicRegrouper
@@ -38,7 +39,12 @@ class AMemConflictResolutionAgent:
         recent_trace_path: str | None = None,
         group_trace_path: str | None = None,
         unit_trace_path: str | None = None,
+        window_trace_path: str | None = None,
         recent_token_budget: int = 4096,
+        raw_window_size: int = 40,
+        raw_window_token_budget: int = 4096,
+        raw_window_overlap_size: int = 2,
+        memory_unit_token_budget: int = 4096,
         recent_k: int = 5,
         enable_topic_regrouping: bool = False,
         regroup_similarity_threshold: float = 0.42,
@@ -65,6 +71,16 @@ class AMemConflictResolutionAgent:
             embedding_model=embedding_model,
             trace_path=recent_trace_path,
         )
+        self.raw_turn_window = RawMemoryTurnWindowBuffer(
+            window_size=raw_window_size,
+            token_budget=raw_window_token_budget,
+            overlap_size=raw_window_overlap_size,
+            trace_path=window_trace_path,
+        )
+        self.memory_unit_buffer = MemoryUnitPingPongBuffer(
+            token_budget=memory_unit_token_budget,
+            trace_path=window_trace_path,
+        )
         self.enable_topic_regrouping = enable_topic_regrouping
         self.topic_regrouper = TopicRegrouper(
             embedding_model=embedding_model,
@@ -80,6 +96,7 @@ class AMemConflictResolutionAgent:
         self.source_name = ""
         self.archived_chunk_ids: list[str] = []
         self.flush_history: list[dict] = []
+        self.raw_window_history: list[dict] = []
 
     def _format_chunk(self, chunk_text: str, chunk_id: str) -> str:
         return self.memorize_template.format(
@@ -98,47 +115,87 @@ class AMemConflictResolutionAgent:
             self.memory_system.add_note(formatted_chunk, time=group.topic_id)
             self.archived_chunk_ids.append(group.topic_id)
 
-    def _flush_recent_window(self):
-        window_id, turns = self.recent_memory.flush_window()
-        if not turns:
+    def _archive_memory_unit_window(self, window_id: str, memory_units):
+        if not memory_units:
             return
         flush_record = {
             "window_id": window_id,
-            "source_turn_ids": [turn.turn_id for turn in turns],
-            "source_chunk_ids": [turn.turn_id for turn in turns],
-            "flushed_tokens": sum(turn.token_count for turn in turns),
-            "region_size": self.recent_memory.region_size,
-            "active_region_after_flush": self.recent_memory.active_region,
-            "region_tokens_after_flush": list(self.recent_memory.region_tokens),
-            "retained_buffer_turn_ids": [turn.turn_id for turn in self.recent_memory.turns],
-            "retained_buffer_chunk_ids": [turn.turn_id for turn in self.recent_memory.turns],
-            "retained_buffer_tokens": self.recent_memory.total_tokens,
-            "mode": "topic_regrouping" if self.enable_topic_regrouping else "raw_chunk_archive",
+            "source_turn_ids": sorted({turn_id for unit in memory_units for turn_id in unit.source_turn_ids}),
+            "source_chunk_ids": sorted({turn_id for unit in memory_units for turn_id in unit.source_turn_ids}),
+            "flushed_tokens": sum(self.memory_unit_buffer.token_counter.count(unit.content) for unit in memory_units),
+            "region_size": self.memory_unit_buffer.region_size,
+            "active_region_after_flush": self.memory_unit_buffer.active_region,
+            "region_tokens_after_flush": list(self.memory_unit_buffer.region_tokens),
+            "retained_memory_unit_ids": [unit.unit_id for unit in self.memory_unit_buffer.units],
+            "retained_buffer_tokens": self.memory_unit_buffer.total_tokens,
+            "mode": "topic_regrouping" if self.enable_topic_regrouping else "memory_unit_archive",
             "topic_ids": [],
-            "memory_unit_ids": [],
-            "memory_unit_count": 0,
+            "memory_unit_ids": [unit.unit_id for unit in memory_units],
+            "memory_unit_count": len(memory_units),
         }
         if self.enable_topic_regrouping:
-            memory_units = []
-            for turn in turns:
-                memory_units.extend(self.memory_unit_decomposer.decompose(turn, window_id=window_id))
-            flush_record["memory_unit_ids"] = [unit.unit_id for unit in memory_units]
-            flush_record["memory_unit_count"] = len(memory_units)
             groups = self.topic_regrouper.regroup_units(window_id, memory_units)
             if groups:
                 self._archive_topic_groups(window_id, groups)
                 flush_record["topic_ids"] = [group.topic_id for group in groups]
         else:
-            for turn in turns:
-                self._archive_raw_chunk(turn.turn_id, turn.raw_context)
+            for unit in memory_units:
+                self._archive_raw_chunk(unit.unit_id, unit.content)
         self.flush_history.append(flush_record)
+
+    def _flush_memory_unit_window(self):
+        window_id, memory_units = self.memory_unit_buffer.flush_window()
+        self._archive_memory_unit_window(window_id, memory_units)
+
+    def _process_raw_turn_windows(self):
+        while self.raw_turn_window.should_process():
+            raw_window = self.raw_turn_window.pop_window()
+            memory_units = self.memory_unit_decomposer.decompose_window(
+                window_id=raw_window.window_id,
+                turns=raw_window.turns,
+            )
+            self.raw_window_history.append(
+                {
+                    "window_id": raw_window.window_id,
+                    "source_turn_ids": [turn.turn_id for turn in raw_window.turns],
+                    "window_turn_count": len(raw_window.turns),
+                    "window_token_count": raw_window.token_count,
+                    "memory_unit_ids": [unit.unit_id for unit in memory_units],
+                    "memory_unit_count": len(memory_units),
+                }
+            )
+            self.memory_unit_buffer.add_units(memory_units)
+            while self.memory_unit_buffer.should_flush():
+                self._flush_memory_unit_window()
+
+    def _process_remaining_windows(self):
+        if self.raw_turn_window.turns:
+            raw_window = self.raw_turn_window.pop_remaining()
+            memory_units = self.memory_unit_decomposer.decompose_window(
+                window_id=raw_window.window_id,
+                turns=raw_window.turns,
+            )
+            self.raw_window_history.append(
+                {
+                    "window_id": raw_window.window_id,
+                    "source_turn_ids": [turn.turn_id for turn in raw_window.turns],
+                    "window_turn_count": len(raw_window.turns),
+                    "window_token_count": raw_window.token_count,
+                    "memory_unit_ids": [unit.unit_id for unit in memory_units],
+                    "memory_unit_count": len(memory_units),
+                    "remaining": True,
+                }
+            )
+            self.memory_unit_buffer.add_units(memory_units)
+        window_id, memory_units = self.memory_unit_buffer.flush_remaining()
+        self._archive_memory_unit_window(window_id, memory_units)
 
     def ingest_chunks(self, context: str, chunk_size: int):
         chunks = chunk_text_into_sentences(context, chunk_size=chunk_size)
         for chunk_idx, chunk in enumerate(chunks):
             chunk_id = f"chunk_{chunk_idx:04d}"
             formatted_chunk = self._format_chunk(chunk, chunk_id)
-            self.recent_memory.add_turn(
+            turn = self.recent_memory.add_turn(
                 turn_id=chunk_id,
                 raw_context=chunk,
                 formatted_turn=formatted_chunk,
@@ -146,7 +203,10 @@ class AMemConflictResolutionAgent:
                 timestamp=chunk_id,
             )
             if self.recent_memory.should_flush():
-                self._flush_recent_window()
+                self.recent_memory.flush_window()
+            self.raw_turn_window.add_turn(turn)
+            self._process_raw_turn_windows()
+        self._process_remaining_windows()
         return chunks
 
     def generate_query_terms(self, question: str) -> str:
@@ -216,7 +276,12 @@ def main():
     parser.add_argument("--recent-trace-path", default=None)
     parser.add_argument("--group-trace-path", default=None)
     parser.add_argument("--unit-trace-path", default=None)
+    parser.add_argument("--window-trace-path", default=None)
     parser.add_argument("--recent-token-budget", type=int, default=4096)
+    parser.add_argument("--raw-window-size", type=int, default=40)
+    parser.add_argument("--raw-window-token-budget", type=int, default=4096)
+    parser.add_argument("--raw-window-overlap-size", type=int, default=2)
+    parser.add_argument("--memory-unit-token-budget", type=int, default=4096)
     parser.add_argument("--recent-k", type=int, default=5)
     parser.add_argument("--enable-topic-regrouping", action="store_true")
     parser.add_argument("--regroup-similarity-threshold", type=float, default=0.42)
@@ -233,7 +298,12 @@ def main():
         recent_trace_path=args.recent_trace_path,
         group_trace_path=args.group_trace_path,
         unit_trace_path=args.unit_trace_path,
+        window_trace_path=args.window_trace_path,
         recent_token_budget=args.recent_token_budget,
+        raw_window_size=args.raw_window_size,
+        raw_window_token_budget=args.raw_window_token_budget,
+        raw_window_overlap_size=args.raw_window_overlap_size,
+        memory_unit_token_budget=args.memory_unit_token_budget,
         recent_k=args.recent_k,
         enable_topic_regrouping=args.enable_topic_regrouping,
         regroup_similarity_threshold=args.regroup_similarity_threshold,
@@ -286,17 +356,28 @@ def main():
         "recent_k": args.recent_k,
         "recent_token_budget": args.recent_token_budget,
         "recent_region_size": agent.recent_memory.region_size,
+        "raw_window_size": args.raw_window_size,
+        "raw_window_token_budget": args.raw_window_token_budget,
+        "raw_window_overlap_size": args.raw_window_overlap_size,
+        "memory_unit_token_budget": args.memory_unit_token_budget,
+        "memory_unit_region_size": agent.memory_unit_buffer.region_size,
         "topic_regrouping_enabled": args.enable_topic_regrouping,
         "trace_path": args.trace_path,
         "recent_trace_path": args.recent_trace_path,
         "group_trace_path": args.group_trace_path,
         "unit_trace_path": args.unit_trace_path,
+        "window_trace_path": args.window_trace_path,
         "chunks_ingested": len(chunks),
         "archived_units": len(agent.archived_chunk_ids),
         "archived_ids": agent.archived_chunk_ids,
+        "raw_window_history": agent.raw_window_history,
         "flush_history": agent.flush_history,
         "recent_buffer_size": len(agent.recent_memory.turns),
         "recent_buffer_tokens": agent.recent_memory.total_tokens,
+        "raw_turn_window_buffer_size": len(agent.raw_turn_window.turns),
+        "raw_turn_window_buffer_tokens": agent.raw_turn_window.token_count,
+        "memory_unit_buffer_size": len(agent.memory_unit_buffer.units),
+        "memory_unit_buffer_tokens": agent.memory_unit_buffer.total_tokens,
         "max_questions": args.max_questions,
         "summary": summary,
         "results": results,
@@ -317,6 +398,8 @@ def main():
         print(f"Group trace log: {Path(args.group_trace_path).resolve()}")
     if args.unit_trace_path:
         print(f"Unit trace log: {Path(args.unit_trace_path).resolve()}")
+    if args.window_trace_path:
+        print(f"Window trace log: {Path(args.window_trace_path).resolve()}")
     for metric_name, metric_value in summary.items():
         print(f"{metric_name}: {metric_value:.4f}")
 
