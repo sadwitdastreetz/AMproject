@@ -1745,3 +1745,42 @@ trace 诊断：
 
 - 这是实验基础设施整理，不改变方法本身。
 - 后续正式 run 应使用新版结果结构；旧结果只作为历史记录保留。
+
+## 2026-04-13 - Structure update: MemoryUnit fidelity_mode
+
+类型：
+
+- MemoryUnit schema 调整
+- 高保真内容保护的第一步
+- 未新增 benchmark 分数
+
+背景：
+
+- 用户提出：代码只是例子，真实场景还有更多不能安全压缩的内容
+- 不希望加入 `unit_type`，因为类型枚举会冗余且分不完
+- 希望只保留真正有用的控制字段 `fidelity_mode`
+
+代码更新：
+
+- `MemoryUnit` 新增 `fidelity_mode`
+- MemoryUnit decomposition prompt 新增判断规则：
+  - `semantic`
+  - `verbatim_required`
+- 解析逻辑新增默认与校验：
+  - 缺省为 `semantic`
+  - 非法值回退为 `semantic`
+- Structured Working Memory prompt metadata 展示 `fidelity_mode`
+- per-question `retrieval_metadata.working_unit_hits` 记录 `fidelity_mode`
+
+验证：
+
+- 已运行 `py_compile`
+- 已运行离线 mock 测试：
+  - LLM 输出 `verbatim_required` 时正确进入 `MemoryUnit.fidelity_mode`
+  - LLM 省略 `fidelity_mode` 时默认 `semantic`
+  - working memory prompt 中包含 `fidelity_mode`
+
+当前判断：
+
+- 本轮只完成标注和 trace/prompt 可见性。
+- 下一步如果继续推进，应实现 `verbatim_required` 命中后的原始 `MemoryTurn` 回拉。

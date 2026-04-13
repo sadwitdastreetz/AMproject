@@ -456,3 +456,41 @@ SimpleMem 对齐依据：
 - 后续新实验应优先使用新版 trace/result 结构
 - `run_config` 不记录 API key，只记录 `OPENAI_BASE_URL`
 
+## 11. MemoryUnit fidelity mode
+
+主要文件：
+
+- `AgenticMemory/memory_unit_decomposer.py`
+- `AgenticMemory/memory_window_buffers.py`
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+背景：
+
+- 代码只是一个例子，真实场景里还有日志、表格、公式、配置、引用文本等高保真内容
+- 不适合加入 `unit_type` 枚举，因为类型分不完，也会让系统变成脆弱 ontology
+- 需要让 LLM 判断 memory unit 是否能安全语义化，还是必须保留原文可回溯
+
+改动：
+
+1. `MemoryUnit` 新增：
+   - `fidelity_mode`
+2. prompt schema 新增：
+   - `"fidelity_mode": "semantic"`
+3. prompt 约束新增：
+   - 可安全自包含改写时使用 `semantic`
+   - 未来回答可能依赖 exact wording / ordering / symbols / formatting / code / logs / formulas / tables / quoted text 等高保真细节时使用 `verbatim_required`
+   - `verbatim_required` 时不要压缩掉关键细节，并保持 `source_turn_ids` 准确，便于回拉原始 turn
+4. 解析逻辑：
+   - 只接受 `semantic` / `verbatim_required`
+   - 缺省或非法值默认 `semantic`
+5. working memory prompt：
+   - metadata 中展示 `fidelity_mode`
+6. 每题 `retrieval_metadata.working_unit_hits`：
+   - 增加 `fidelity_mode`
+
+当前判断：
+
+- `fidelity_mode` 是必要且低冗余的控制字段
+- 不加入 `unit_type`
+- 后续真正完整的实现应在 retrieval 命中 `verbatim_required` 时，回拉对应 `MemoryTurn.raw_context`，而不是只展示 MemoryUnit 摘要
+

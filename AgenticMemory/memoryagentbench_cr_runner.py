@@ -355,6 +355,7 @@ Keywords:"""
                     "unit_id": unit.unit_id,
                     "source_turn_ids": unit.source_turn_ids,
                     "timestamp": unit.timestamp,
+                    "fidelity_mode": unit.fidelity_mode,
                     "topic": unit.topic,
                     "keywords": unit.keywords,
                 }

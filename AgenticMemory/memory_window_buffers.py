@@ -294,6 +294,7 @@ class MemoryUnitPingPongBuffer:
         for unit in units:
             source_turn_ids = ", ".join(unit.source_turn_ids)
             metadata = []
+            metadata.append(f"fidelity_mode={unit.fidelity_mode}")
             if unit.topic:
                 metadata.append(f"topic={unit.topic}")
             if unit.keywords:

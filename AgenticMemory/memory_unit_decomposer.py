@@ -90,6 +90,7 @@ class MemoryUnitTraceLogger:
 class MemoryUnit:
     unit_id: str
     content: str
+    fidelity_mode: str
     keywords: List[str]
     timestamp: Optional[str]
     location: Optional[str]
@@ -140,10 +141,14 @@ Rules:
 - Preserve benchmark facts exactly when the input is a numbered fact list. Do not correct facts using real-world knowledge.
 - Use the provided timestamp/source when no better time is stated.
 - This follows the SimpleMem MemoryEntry idea: lossless, self-contained restatements with keywords and symbolic metadata.
+- Set fidelity_mode to "semantic" when the unit can be safely represented by a self-contained restatement.
+- Set fidelity_mode to "verbatim_required" when answering future questions may require exact wording, ordering, symbols, formatting, code, logs, formulas, tables, quoted text, or any other high-fidelity detail.
+- For "verbatim_required" units, do not compress away the exact details. Use content as a faithful pointer/summary and keep source_turn_ids accurate so retrieval can recover the original turn.
 
 Return each object with this schema:
 {{
   "lossless_restatement": "self-contained factual memory sentence",
+  "fidelity_mode": "semantic",
   "keywords": ["keyword"],
   "timestamp": "{timestamp_hint}",
   "location": null,
@@ -232,6 +237,9 @@ Malformed JSON:
                 content = _as_optional_str(item.get("content") or item.get("lossless_restatement"))
                 if not content:
                     continue
+                fidelity_mode = _as_optional_str(item.get("fidelity_mode")) or "semantic"
+                if fidelity_mode not in {"semantic", "verbatim_required"}:
+                    fidelity_mode = "semantic"
                 item_source_turn_ids = _as_list(item.get("source_turn_ids")) or source_turn_ids
                 item_source_turn_ids = [turn_id for turn_id in item_source_turn_ids if turn_id in turn_by_id] or source_turn_ids
                 primary_source_turn_id = item_source_turn_ids[0] if item_source_turn_ids else (source_turn_ids[0] if source_turn_ids else "")
@@ -241,6 +249,7 @@ Malformed JSON:
                     MemoryUnit(
                         unit_id=unit_id,
                         content=content,
+                        fidelity_mode=fidelity_mode,
                         keywords=_as_list(item.get("keywords")),
                         timestamp=_as_optional_str(item.get("timestamp")) or (primary_turn.timestamp if primary_turn else source_timestamp),
                         location=_as_optional_str(item.get("location")),

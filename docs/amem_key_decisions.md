@@ -791,3 +791,34 @@ profiling 观察：
 
 - 这一步是为了保证后续实验可复现、可排查，而不是引入新的方法变量。
 - 旧结果文件不会自动补齐新版 metadata；后续新 run 才视为 trace 结构规范化后的结果。
+
+## 38. 关于 MemoryUnit fidelity_mode 的决定
+
+当前新增决策：
+
+1. 不引入 `unit_type`。
+2. 原因：
+   - 代码、日志、表格、公式、配置、长引用等类型分不完
+   - 类型枚举容易过拟合具体内容形态
+   - 当前真正影响系统行为的是“能否安全语义压缩”，不是内容类型名称
+3. 保留并新增 `fidelity_mode`：
+   - `semantic`
+   - `verbatim_required`
+4. 由 LLM 在 MemoryUnit decomposition 阶段判断 `fidelity_mode`。
+5. `verbatim_required` 的含义：
+   - 后续回答可能依赖原文的 exact wording / order / symbols / formatting / code / logs / formulas / tables / quoted text 等高保真信息
+   - MemoryUnit 只作为索引/指针，不能作为唯一事实载体
+6. 当前第一版只把 `fidelity_mode` 写入：
+   - MemoryUnit schema
+   - unit trace
+   - Structured Working Memory prompt metadata
+   - per-question retrieval metadata
+7. 后续需要补的完整行为：
+   - retrieval 命中 `verbatim_required` MemoryUnit 时，应根据 `source_turn_ids` 回拉原始 `MemoryTurn.raw_context` 或 `formatted_turn`
+   - prompt 中应把原文放入类似 `Verbatim Source Memory` 的区块
+
+当前判断：
+
+- `fidelity_mode` 是低冗余、跨场景的控制字段。
+- 不把它扩展成类型分类系统。
+- 当前提交只完成标注和可观测性，尚未完成 verbatim source 回拉。
