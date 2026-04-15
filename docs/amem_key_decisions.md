@@ -822,3 +822,28 @@ profiling 观察：
 - `fidelity_mode` 是低冗余、跨场景的控制字段。
 - 不把它扩展成类型分类系统。
 - 当前提交只完成标注和可观测性，尚未完成 verbatim source 回拉。
+
+## 39. 关于 Verbatim Source Memory 回拉的决定
+
+当前新增决策：
+
+1. `fidelity_mode=verbatim_required` 必须触发原文回拉，否则该字段只是在做标注，没有真正保护高保真信息。
+2. retrieval prompt 新增 `Verbatim Source Memory` 区块。
+3. 优先级固定为：
+   - `Recent Turn Memory`
+   - `Verbatim Source Memory`
+   - `Structured Working Memory`
+   - `Archival Memory`
+4. `Structured Working Memory` 中的 `verbatim_required` unit 只能作为索引/指针。
+5. 如果要回答 exact wording / order / symbols / formatting / code / logs / formulas / tables / quoted text 等问题，必须优先查看 `Verbatim Source Memory`。
+6. 为了支持 recent buffer 滚动后的回拉，runner 必须维护：
+   - `turn_store`
+   - `memory_unit_store`
+   - `archival_note_unit_ids`
+7. A-Mem archival note 命中后，如果能映射回 `verbatim_required` MemoryUnit，也应回拉原始 turn。
+
+当前判断：
+
+- 这一步把 MemoryUnit 从“摘要替代物”改回“结构化索引层”。
+- 高保真内容不再依赖 LLM restatement 承载全部信息。
+- 后续迁移到 LongMemEval/LoCoMo 时，这个设计比 `unit_type` 更通用。

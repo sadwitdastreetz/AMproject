@@ -494,3 +494,45 @@ SimpleMem 对齐依据：
 - 不加入 `unit_type`
 - 后续真正完整的实现应在 retrieval 命中 `verbatim_required` 时，回拉对应 `MemoryTurn.raw_context`，而不是只展示 MemoryUnit 摘要
 
+## 12. Verbatim source memory retrieval
+
+主要文件：
+
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+
+背景：
+
+- `fidelity_mode=verbatim_required` 不能只停留在 trace/prompt metadata
+- 命中这类 MemoryUnit 时，系统必须回拉原始 `MemoryTurn`，否则代码、日志、公式、表格等高保真信息仍会被摘要层吞掉
+
+改动：
+
+1. `AMemConflictResolutionAgent` 新增长期索引：
+   - `turn_store`
+   - `memory_unit_store`
+   - `archival_note_unit_ids`
+2. ingest 时保存所有 `MemoryTurn`
+   - 不依赖 recent buffer 是否仍保留该 turn
+3. MemoryUnit 生成后保存到 `memory_unit_store`
+4. MemoryUnit 归档到 A-Mem 时记录 archival note 与 MemoryUnit 的对应关系
+   - 单 unit archival: `unit_id -> [unit_id]`
+   - topic group archival: `topic_id -> group.memory_unit_ids`
+5. retrieval 时新增 `Verbatim Source Memory`
+   - working memory 命中 `verbatim_required` unit 时回拉原始 turn
+   - archival note 命中后，如果可映射回 `verbatim_required` unit，也回拉原始 turn
+6. prompt 优先级更新为：
+   - Recent Turn Memory
+   - Verbatim Source Memory
+   - Structured Working Memory
+   - Archival Memory
+7. result JSON 每题新增：
+   - `verbatim_source_context`
+   - `retrieval_metadata.verbatim_source_turn_ids`
+   - `retrieval_metadata.verbatim_source_available`
+   - archival hit 中记录 `memory_unit_ids` 和 `verbatim_required_unit_ids`
+
+当前判断：
+
+- 这完成了 `fidelity_mode=verbatim_required` 的第一版闭环行为
+- MemoryUnit 在高保真场景中变成“索引/指针”，而不是原文替代物
+

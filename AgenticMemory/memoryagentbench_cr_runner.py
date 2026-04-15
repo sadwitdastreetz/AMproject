@@ -66,7 +66,7 @@ def _build_run_config(args, output_path: Path, run_id: str) -> dict:
             "MemoryUnitPingPongBuffer",
             "TopicRegrouper or MemoryUnit archival",
             "A-Mem Archival Memory",
-            "Recent + Structured Working + Archival retrieval",
+            "Recent + Verbatim Source + Structured Working + Archival retrieval",
         ],
         "backend": args.backend,
         "model": args.model,
@@ -181,6 +181,9 @@ class AMemConflictResolutionAgent:
         self.archived_chunk_ids: list[str] = []
         self.flush_history: list[dict] = []
         self.raw_window_history: list[dict] = []
+        self.turn_store = {}
+        self.memory_unit_store = {}
+        self.archival_note_unit_ids = {}
 
     def _format_chunk(self, chunk_text: str, chunk_id: str) -> str:
         return self.memorize_template.format(
@@ -198,6 +201,7 @@ class AMemConflictResolutionAgent:
             formatted_chunk = self._format_chunk(group.text, group.topic_id)
             self.memory_system.add_note(formatted_chunk, time=group.topic_id)
             self.archived_chunk_ids.append(group.topic_id)
+            self.archival_note_unit_ids[group.topic_id] = list(group.memory_unit_ids)
 
     def _archive_memory_unit_window(self, window_id: str, memory_units):
         if not memory_units:
@@ -225,6 +229,7 @@ class AMemConflictResolutionAgent:
         else:
             for unit in memory_units:
                 self._archive_raw_chunk(unit.unit_id, unit.content)
+                self.archival_note_unit_ids[unit.unit_id] = [unit.unit_id]
         self.flush_history.append(flush_record)
 
     def _flush_memory_unit_window(self):
@@ -238,6 +243,7 @@ class AMemConflictResolutionAgent:
                 window_id=raw_window.window_id,
                 turns=raw_window.turns,
             )
+            self._store_memory_units(memory_units)
             self.raw_window_history.append(
                 {
                     "window_id": raw_window.window_id,
@@ -259,6 +265,7 @@ class AMemConflictResolutionAgent:
                 window_id=raw_window.window_id,
                 turns=raw_window.turns,
             )
+            self._store_memory_units(memory_units)
             self.raw_window_history.append(
                 {
                     "window_id": raw_window.window_id,
@@ -286,12 +293,60 @@ class AMemConflictResolutionAgent:
                 source=self.source_name or "Conflict_Resolution",
                 timestamp=chunk_id,
             )
+            self.turn_store[turn.turn_id] = turn
             if self.recent_memory.should_flush():
                 self.recent_memory.flush_window()
             self.raw_turn_window.add_turn(turn)
             self._process_raw_turn_windows()
         self._process_remaining_raw_turn_window()
         return chunks
+
+    def _store_memory_units(self, memory_units):
+        for unit in memory_units:
+            self.memory_unit_store[unit.unit_id] = unit
+
+    def _format_verbatim_source_memory(self, source_turn_ids):
+        ordered_turn_ids = []
+        seen = set()
+        for turn_id in source_turn_ids:
+            if turn_id in seen:
+                continue
+            seen.add(turn_id)
+            ordered_turn_ids.append(turn_id)
+        if not ordered_turn_ids:
+            return "No verbatim source memory required."
+
+        blocks = []
+        missing_turn_ids = []
+        for turn_id in ordered_turn_ids:
+            turn = self.turn_store.get(turn_id)
+            if not turn:
+                missing_turn_ids.append(turn_id)
+                continue
+            blocks.append(
+                f"source turn id:{turn.turn_id}\n"
+                f"source:{turn.source}\n"
+                f"timestamp:{turn.timestamp}\n"
+                f"verbatim content:\n{turn.formatted_turn}"
+            )
+        if missing_turn_ids:
+            blocks.append(
+                "Missing verbatim source turns:\n" + ", ".join(missing_turn_ids)
+            )
+        return "\n\n".join(blocks) if blocks else "No verbatim source memory available."
+
+    def _verbatim_turn_ids_from_units(self, units):
+        turn_ids = []
+        seen = set()
+        for unit in units:
+            if unit.fidelity_mode != "verbatim_required":
+                continue
+            for turn_id in unit.source_turn_ids:
+                if turn_id in seen:
+                    continue
+                seen.add(turn_id)
+                turn_ids.append(turn_id)
+        return turn_ids
 
     def generate_query_terms(self, question: str) -> str:
         prompt = f"""Given the following question, generate several keywords separated by commas.
@@ -311,30 +366,49 @@ Keywords:"""
         raw_context, archival_indices = self.memory_system.find_related_memories(query_terms, k=self.retrieve_k)
         all_archival_memories = list(self.memory_system.memories.values())
         archival_hits = []
+        archival_units = []
         for memory_index in archival_indices:
             if 0 <= memory_index < len(all_archival_memories):
                 memory = all_archival_memories[memory_index]
+                memory_unit_ids = self.archival_note_unit_ids.get(memory.timestamp, [])
+                hit_units = [
+                    self.memory_unit_store[unit_id]
+                    for unit_id in memory_unit_ids
+                    if unit_id in self.memory_unit_store
+                ]
+                archival_units.extend(hit_units)
                 archival_hits.append(
                     {
                         "index": memory_index,
                         "note_id": memory.id,
                         "timestamp": memory.timestamp,
+                        "memory_unit_ids": memory_unit_ids,
+                        "verbatim_required_unit_ids": [
+                            unit.unit_id
+                            for unit in hit_units
+                            if unit.fidelity_mode == "verbatim_required"
+                        ],
                         "content_preview": memory.content[:240],
                     }
                 )
+        verbatim_source_turn_ids = self._verbatim_turn_ids_from_units(working_units + archival_units)
+        verbatim_source_context = self._format_verbatim_source_memory(verbatim_source_turn_ids)
         user_prompt = self.query_template.format(question=question)
         priority_instruction = (
             "Use the Recent Turn Memory section as the primary source of truth. "
-            "If Recent Turn Memory is insufficient, use Structured Working Memory. "
-            "If both recent layers are insufficient, use Archival Memory. "
+            "Use Verbatim Source Memory whenever exact wording, order, symbols, formatting, code, logs, formulas, tables, or quoted text may matter. "
+            "If Structured Working Memory says fidelity_mode=verbatim_required, treat it as an index and rely on Verbatim Source Memory for exact details. "
+            "If Recent Turn Memory and Verbatim Source Memory are insufficient, use Structured Working Memory. "
+            "If these recent/working layers are insufficient, use Archival Memory. "
             "If these memory layers conflict, prefer the newer/higher-priority layer in this order: "
-            "Recent Turn Memory, then Structured Working Memory, then Archival Memory. "
+            "Recent Turn Memory, then Verbatim Source Memory, then Structured Working Memory, then Archival Memory. "
             "Do not use real-world knowledge outside the provided memory."
         )
         full_prompt = (
             f"{user_prompt}\n\n"
             f"{priority_instruction}\n\n"
             f"Recent Turn Memory:\n{recent_context}\n\n"
+            f"Verbatim Source Memory:\n{verbatim_source_context}\n\n"
             f"Structured Working Memory:\n{working_unit_context}\n\n"
             f"Archival Memory:\n{raw_context}"
         )
@@ -361,9 +435,12 @@ Keywords:"""
                 }
                 for unit in working_units
             ],
+            "verbatim_source_turn_ids": verbatim_source_turn_ids,
+            "verbatim_source_available": bool(verbatim_source_turn_ids),
+            "verbatim_source_context": verbatim_source_context,
             "archival_hits": archival_hits,
         }
-        return response, recent_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata
+        return response, recent_context, verbatim_source_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata
 
 
 def evaluate_predictions(prediction: str, answers):
@@ -457,7 +534,7 @@ def main():
             row["metadata"].get("qa_pair_ids", [])[: args.max_questions],
         )
     ):
-        prediction, recent_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata = agent.answer(question)
+        prediction, recent_context, verbatim_source_context, working_unit_context, raw_context, query_terms, full_prompt, retrieval_metadata = agent.answer(question)
         parsed_prediction, metrics = evaluate_predictions(prediction, answers)
         for key, value in metrics.items():
             metric_totals.setdefault(key, []).append(float(value))
@@ -473,6 +550,7 @@ def main():
                 "query_terms": query_terms,
                 "retrieval_metadata": retrieval_metadata,
                 "recent_context": recent_context,
+                "verbatim_source_context": verbatim_source_context,
                 "working_unit_context": working_unit_context,
                 "raw_context": raw_context,
                 "metrics": metrics,
@@ -532,6 +610,9 @@ def main():
             "archival_note_count": len(agent.memory_system.memories),
             "archived_ids": agent.archived_chunk_ids,
             "flush_count": len(agent.flush_history),
+            "turn_store_size": len(agent.turn_store),
+            "memory_unit_store_size": len(agent.memory_unit_store),
+            "archival_note_unit_map_size": len(agent.archival_note_unit_ids),
         },
         "max_questions": args.max_questions,
         "summary": summary,

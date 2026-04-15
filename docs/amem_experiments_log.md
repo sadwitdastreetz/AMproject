@@ -1784,3 +1784,52 @@ trace 诊断：
 
 - 本轮只完成标注和 trace/prompt 可见性。
 - 下一步如果继续推进，应实现 `verbatim_required` 命中后的原始 `MemoryTurn` 回拉。
+
+## 2026-04-15 - Structure update: Verbatim Source Memory retrieval
+
+类型：
+
+- 检索层完整实现
+- 高保真内容保护
+- 未新增 benchmark 分数
+
+背景：
+
+- 用户要求完成完整实现
+- 之前 `fidelity_mode=verbatim_required` 只进入 schema、trace 和 metadata
+- 还没有在 retrieval 阶段真正回拉原始 turn
+
+代码更新：
+
+- `AMemConflictResolutionAgent`
+  - 新增 `turn_store`
+  - 新增 `memory_unit_store`
+  - 新增 `archival_note_unit_ids`
+- ingest 时保存所有原始 `MemoryTurn`
+- MemoryUnit decomposition 后保存所有 `MemoryUnit`
+- MemoryUnit archival / topic group archival 时记录 note 与 source MemoryUnit 的映射
+- `answer()` 新增：
+  - `Verbatim Source Memory`
+  - `verbatim_source_turn_ids`
+  - `verbatim_source_context`
+- prompt 优先级更新为：
+  - Recent Turn Memory
+  - Verbatim Source Memory
+  - Structured Working Memory
+  - Archival Memory
+
+验证：
+
+- 已运行 `py_compile`
+- 已运行离线 mock 测试：
+  - 构造 `fidelity_mode=verbatim_required` 的 MemoryUnit
+  - 构造 source `MemoryTurn`，其中包含 Python code block
+  - working / archival 命中该 MemoryUnit 后，prompt 中出现 `Verbatim Source Memory`
+  - prompt 中包含原始代码 `def parse_items`
+  - retrieval metadata 记录 `verbatim_source_turn_ids`
+  - archival hit 记录 `verbatim_required_unit_ids`
+
+当前判断：
+
+- `verbatim_required` 已从“标注”变成“检索行为”。
+- 后续正式实验应观察 `verbatim_source_context` 的长度和命中频率，避免 prompt 被过大的原文回拉撑爆。
