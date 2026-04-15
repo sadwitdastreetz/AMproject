@@ -1833,3 +1833,40 @@ trace 诊断：
 
 - `verbatim_required` 已从“标注”变成“检索行为”。
 - 后续正式实验应观察 `verbatim_source_context` 的长度和命中频率，避免 prompt 被过大的原文回拉撑爆。
+
+## 2026-04-15 - Documentation correction: TopicRegrouper is Stage B main path
+
+类型：
+
+- 方法口径修正
+- 文档更新
+- 未新增 benchmark 分数
+
+背景：
+
+- 此前有表述把 `TopicRegrouper` 写成“可选”路径
+- 用户指出这不符合当前 Stage B 目标
+- Stage B 的核心就是让 MemoryUnit 先经过 topic regrouping，再形成更清晰的 A-Mem archival write unit
+
+修正内容：
+
+- 明确 `TopicRegrouper.regroup_units(...)` 是 Stage B 主路径必经步骤
+- `MemoryUnit -> 直接写入 A-Mem` 只作为 debugging / ablation / 接线检查
+- 更新 runner 的 `run_config.memory_lifecycle` 描述，避免新结果文件继续产生误导性文字
+
+当前主路径：
+
+```text
+MemoryTurn
+-> RawMemoryTurnWindowBuffer
+-> MemoryUnitDecomposer
+-> MemoryUnitPingPongBuffer
+-> TopicRegrouper.regroup_units(...)
+-> grouped MemoryUnit topic groups
+-> A-Mem archival notes
+```
+
+当前判断：
+
+- 未启用 topic regrouping 的 run 不能代表 Stage B 方法效果。
+- 后续正式 Stage B 实验必须显式启用 topic regrouping，并在 run_config 中保留该状态。

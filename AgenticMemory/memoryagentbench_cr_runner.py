@@ -64,7 +64,7 @@ def _build_run_config(args, output_path: Path, run_id: str) -> dict:
             "RawMemoryTurnWindowBuffer",
             "MemoryUnitDecomposer",
             "MemoryUnitPingPongBuffer",
-            "TopicRegrouper or MemoryUnit archival",
+            "TopicRegrouper (main path; direct MemoryUnit archival is ablation/debug only)",
             "A-Mem Archival Memory",
             "Recent + Verbatim Source + Structured Working + Archival retrieval",
         ],

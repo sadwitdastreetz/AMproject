@@ -847,3 +847,28 @@ profiling 观察：
 - 这一步把 MemoryUnit 从“摘要替代物”改回“结构化索引层”。
 - 高保真内容不再依赖 LLM restatement 承载全部信息。
 - 后续迁移到 LongMemEval/LoCoMo 时，这个设计比 `unit_type` 更通用。
+
+## 40. 关于 TopicRegrouper 在 Stage B 主路径中的地位
+
+当前修正决策：
+
+1. 在 Stage B 方法设计中，`TopicRegrouper` 不是可选组件。
+2. 主路径必须是：
+   - `MemoryTurn`
+   - `RawMemoryTurnWindowBuffer`
+   - `MemoryUnitDecomposer`
+   - `MemoryUnitPingPongBuffer`
+   - `TopicRegrouper.regroup_units(...)`
+   - grouped MemoryUnit topic groups
+   - A-Mem archival notes
+3. `MemoryUnit -> 直接写入 A-Mem` 只能作为：
+   - debugging fallback
+   - ablation baseline
+   - parser / retrieval 接线检查
+4. 后续报告中不能把 `TopicRegrouper` 表述为“可选中间层”。
+5. 如果实验没有启用 `TopicRegrouper`，必须在日志中明确标注为非主路径实验。
+
+当前判断：
+
+- Stage B 的核心研究问题就是：更清晰的 MemoryUnit regrouping 是否能为 A-Mem update/evolution 提供更好的 archival write unit。
+- 因此跳过 `TopicRegrouper` 的 run 不能代表 Stage B 方法效果。

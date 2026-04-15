@@ -536,3 +536,32 @@ SimpleMem 对齐依据：
 - 这完成了 `fidelity_mode=verbatim_required` 的第一版闭环行为
 - MemoryUnit 在高保真场景中变成“索引/指针”，而不是原文替代物
 
+## 13. TopicRegrouper main-path wording
+
+主要文件：
+
+- `AgenticMemory/memoryagentbench_cr_runner.py`
+- `docs/amem_key_decisions.md`
+- `docs/amem_experiments_log.md`
+
+背景：
+
+- Stage B 的目标不是让 `TopicRegrouper` 成为可有可无的增强项
+- Stage B 的核心就是让 `MemoryUnit` 先 regroup 成更清晰的 archival write unit，再进入 A-Mem
+
+修正：
+
+1. 文档口径改为：
+   - `TopicRegrouper` 是 Stage B 主路径必经中间层
+2. `MemoryUnit -> 直接写入 A-Mem` 只保留为：
+   - debugging fallback
+   - ablation baseline
+   - 接线检查
+3. runner 的 `run_config.memory_lifecycle` 描述已修正为：
+   - `TopicRegrouper (main path; direct MemoryUnit archival is ablation/debug only)`
+
+当前判断：
+
+- 关闭 `TopicRegrouper` 的实验不能被解释为 Stage B 方法效果
+- 后续正式 Stage B run 必须启用 topic regrouping
+
